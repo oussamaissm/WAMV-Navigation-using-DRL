@@ -1,1043 +1,668 @@
 #!/usr/bin/env python3
 
-"""
-Single-file DRL environment for the VRX WAM-V.
-
-Architecture:
-
-    VRX / Gazebo
-         |
-         +---- GPS  ---> ROS 2 subscriber
-         |
-         +---- IMU  ---> ROS 2 subscriber
-         |
-         +---- Thrusters <--- ROS 2 publishers
-                              |
-                              v
-                         DRL environment
-                              |
-                              v
-                         SAC / PPO
-
-The Python code does NOT simulate the WAM-V dynamics.
-Gazebo/VRX is the real plant.
-
-Observation:
-    [position_error_x,
-     position_error_y,
-     heading_error,
-     u,
-     v,
-     r,
-     desired_speed]
-
-Action:
-    [left_thruster, right_thruster]
-
-GPS:
-    /wamv/sensors/gps/gps/fix
-
-IMU:
-    /wamv/sensors/imu/imu/data
-
-Thrusters:
-    /wamv/thrusters/left/thrust
-    /wamv/thrusters/right/thrust
-"""
-
+import csv
 import math
+import os
+import subprocess
 import time
-import threading
+from typing import Optional
 
-import numpy as np
 import gymnasium as gym
-from gymnasium import spaces
-
+import numpy as np
 import rclpy
-from rclpy.node import Node
-
-from sensor_msgs.msg import NavSatFix, Imu
+from geometry_msgs.msg import Vector3
+from sensor_msgs.msg import Imu, NavSatFix
 from std_msgs.msg import Float64
 
 
-# ============================================================
-# Utility functions
-# ============================================================
+WORLD_NAME = "sydney_regatta"
+WAMV_NAME = "wamv"
 
-def wrap_angle(angle):
-    """
-    Wrap an angle to [-pi, pi].
+START_WORLD_X = -800.32
+START_WORLD_Y = 300.02
+GOAL_WORLD_X = -720.0
+GOAL_WORLD_Y = 370.0
 
-    Example:
-        +3.2 rad -> approximately -3.08 rad
-        -3.2 rad -> approximately +3.08 rad
-    """
-    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+DESIRED_SPEED = 1.0
+GOAL_TOLERANCE = 2.0
 
 
-def quaternion_to_yaw(x, y, z, w):
-    """
-    Convert quaternion orientation to yaw angle.
-
-    ROS uses quaternion:
-        q = [x, y, z, w]
-
-    Returns:
-        yaw in radians.
-    """
-
-    siny_cosp = 2.0 * (w * z + x * y)
-    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-
-    return math.atan2(siny_cosp, cosy_cosp)
-
-
-# ============================================================
-# State container
-# ============================================================
-
-class WamvState:
-    """
-    Stores the latest WAM-V state.
-
-    Position:
-        x, y
-
-    Orientation:
-        yaw
-
-    Velocity:
-        u = forward velocity
-        v = lateral velocity
-        r = yaw rate
-
-    GPS is converted into a local XY coordinate system.
-    """
+class WamvNode:
+    """ROS 2 interface to the real VRX WAM-V."""
 
     def __init__(self):
+        self.node = rclpy.create_node("wamv_drl_node")
 
-        self.x = 0.0
-        self.y = 0.0
+        self.left_pub = self.node.create_publisher(
+            Float64, "/wamv/thrusters/left/thrust", 10
+        )
+        self.right_pub = self.node.create_publisher(
+            Float64, "/wamv/thrusters/right/thrust", 10
+        )
 
-        self.yaw = 0.0
+        self.gps_sub = self.node.create_subscription(
+            NavSatFix,
+            "/wamv/sensors/gps/gps/fix",
+            self.gps_callback,
+            10,
+        )
+        self.imu_sub = self.node.create_subscription(
+            Imu,
+            "/wamv/sensors/imu/imu/data",
+            self.imu_callback,
+            10,
+        )
+
+        self.gps_lat: Optional[float] = None
+        self.gps_lon: Optional[float] = None
+        self.gps_lat0: Optional[float] = None
+        self.gps_lon0: Optional[float] = None
+
+        self.imu = None
+
+        self.prev_gps_x = None
+        self.prev_gps_y = None
+        self.prev_gps_time = None
 
         self.u = 0.0
         self.v = 0.0
         self.r = 0.0
 
-        self.gps_received = False
-        self.imu_received = False
-
-        self.last_time = None
-
-        # Previous GPS position
-        self.prev_x = None
-        self.prev_y = None
-
-        # Previous yaw
-        self.prev_yaw = None
-
-        self.lock = threading.Lock()
-
-
-# ============================================================
-# ROS 2 WAM-V interface
-# ============================================================
-
-class WamvNode(Node):
-
-    def __init__(self):
-
-        super().__init__("wamv_drl_node")
-
-        self.state = WamvState()
-
-        # ----------------------------------------------------
-        # GPS reference
-        # ----------------------------------------------------
-
-        self.gps_lat0 = None
-        self.gps_lon0 = None
-
-        # ----------------------------------------------------
-        # Subscribers
-        # ----------------------------------------------------
-
-        self.gps_sub = self.create_subscription(
-            NavSatFix,
-            "/wamv/sensors/gps/gps/fix",
-            self.gps_cb,
-            10
-        )
-
-        self.imu_sub = self.create_subscription(
-            Imu,
-            "/wamv/sensors/imu/imu/data",
-            self.imu_cb,
-            10
-        )
-
-        # ----------------------------------------------------
-        # Thruster publishers
-        # ----------------------------------------------------
-
-        self.left_thruster_pub = self.create_publisher(
-            Float64,
-            "/wamv/thrusters/left/thrust",
-            10
-        )
-
-        self.right_thruster_pub = self.create_publisher(
-            Float64,
-            "/wamv/thrusters/right/thrust",
-            10
-        )
-
-        self.get_logger().info("WAM-V DRL node started.")
-
-    # ========================================================
-    # GPS callback
-    # ========================================================
-
-    def gps_cb(self, msg):
-
-        if math.isnan(msg.latitude) or math.isnan(msg.longitude):
+    def gps_callback(self, msg: NavSatFix):
+        if not np.isfinite(msg.latitude) or not np.isfinite(msg.longitude):
             return
 
-        with self.state.lock:
+        now = time.monotonic()
 
-            # First GPS measurement becomes local origin.
-            if self.gps_lat0 is None:
+        self.gps_lat = msg.latitude
+        self.gps_lon = msg.longitude
 
-                self.gps_lat0 = msg.latitude
-                self.gps_lon0 = msg.longitude
+        if self.gps_lat0 is None:
+            self.gps_lat0 = msg.latitude
+            self.gps_lon0 = msg.longitude
 
-                self.get_logger().info(
-                    f"GPS origin set: "
-                    f"lat={self.gps_lat0:.8f}, "
-                    f"lon={self.gps_lon0:.8f}"
-                )
+        x, y = self.gps_to_local(msg.latitude, msg.longitude)
 
-            # ------------------------------------------------
-            # GPS -> local Cartesian coordinates
-            #
-            # Approximation:
-            #
-            # x = East
-            # y = North
-            # ------------------------------------------------
+        if self.prev_gps_time is not None:
+            dt = now - self.prev_gps_time
 
-            earth_radius = 6378137.0
+            if dt > 1e-4:
+                vx = (x - self.prev_gps_x) / dt
+                vy = (y - self.prev_gps_y) / dt
 
-            lat0_rad = math.radians(self.gps_lat0)
+                # GPS velocity is expressed in the local/world frame.
+                # The body-frame surge/sway values need heading information,
+                # so for this simple environment we keep the local values.
+                self.u = float(vx)
+                self.v = float(vy)
 
-            dx = math.radians(
-                msg.longitude - self.gps_lon0
-            ) * earth_radius * math.cos(lat0_rad)
+        self.prev_gps_x = x
+        self.prev_gps_y = y
+        self.prev_gps_time = now
 
-            dy = math.radians(
-                msg.latitude - self.gps_lat0
-            ) * earth_radius
+    def imu_callback(self, msg: Imu):
+        self.imu = msg
+        self.r = float(msg.angular_velocity.z)
 
-            x = dx
-            y = dy
+    def gps_to_local(self, lat, lon):
+        """Approximate GPS displacement in meters around the first GPS point."""
+        earth_radius = 6378137.0
 
-            # ------------------------------------------------
-            # Estimate velocity from GPS
-            # ------------------------------------------------
+        d_lat = math.radians(lat - self.gps_lat0)
+        d_lon = math.radians(lon - self.gps_lon0)
 
-            now = time.monotonic()
+        x = earth_radius * d_lon * math.cos(math.radians(self.gps_lat0))
+        y = earth_radius * d_lat
 
-            if self.state.prev_x is not None:
+        return float(x), float(y)
 
-                dt = now - self.state.last_time
-
-                # Avoid numerical problems.
-                if 0.001 < dt < 1.0:
-
-                    vx_world = (x - self.state.prev_x) / dt
-                    vy_world = (y - self.state.prev_y) / dt
-
-                    # Convert world velocity to body velocity.
-                    #
-                    # World:
-                    #     vx = East
-                    #     vy = North
-                    #
-                    # Body:
-                    #     u = forward
-                    #     v = lateral
-
-                    yaw = self.state.yaw
-
-                    self.state.u = (
-                        math.cos(yaw) * vx_world
-                        + math.sin(yaw) * vy_world
-                    )
-
-                    self.state.v = (
-                        -math.sin(yaw) * vx_world
-                        + math.cos(yaw) * vy_world
-                    )
-
-            self.state.x = x
-            self.state.y = y
-
-            self.state.prev_x = x
-            self.state.prev_y = y
-
-            self.state.last_time = now
-
-            self.state.gps_received = True
-
-    # ========================================================
-    # IMU callback
-    # ========================================================
-
-    def imu_cb(self, msg):
-
-        q = msg.orientation
-
-        yaw = quaternion_to_yaw(
-            q.x,
-            q.y,
-            q.z,
-            q.w
-        )
-
-        with self.state.lock:
-
-            now = time.monotonic()
-
-            # ------------------------------------------------
-            # Yaw rate
-            # ------------------------------------------------
-
-            if self.state.prev_yaw is not None:
-
-                dt = now - self.state.last_time
-
-                if 0.001 < dt < 1.0:
-
-                    dyaw = wrap_angle(
-                        yaw - self.state.prev_yaw
-                    )
-
-                    self.state.r = dyaw / dt
-
-            self.state.yaw = yaw
-
-            self.state.prev_yaw = yaw
-
-            self.state.imu_received = True
-
-    # ========================================================
-    # Get current state
-    # ========================================================
-
-    def get_state(self):
-
-        with self.state.lock:
-
-            return {
-                "x": self.state.x,
-                "y": self.state.y,
-                "yaw": self.state.yaw,
-                "u": self.state.u,
-                "v": self.state.v,
-                "r": self.state.r,
-                "gps_received": self.state.gps_received,
-                "imu_received": self.state.imu_received,
-            }
-
-    # ========================================================
-    # Publish thruster commands
-    # ========================================================
-
-    def publish_thrusters(self, left, right):
-
+    def publish_thrust(self, left: float, right: float):
         left_msg = Float64()
         right_msg = Float64()
 
         left_msg.data = float(left)
         right_msg.data = float(right)
 
-        self.left_thruster_pub.publish(left_msg)
-        self.right_thruster_pub.publish(right_msg)
-
-    # ========================================================
-    # Stop WAM-V
-    # ========================================================
+        self.left_pub.publish(left_msg)
+        self.right_pub.publish(right_msg)
 
     def stop(self):
+        self.publish_thrust(0.0, 0.0)
 
-        self.publish_thrusters(0.0, 0.0)
-
-
-# ============================================================
-# Trajectory
-# ============================================================
-
-class StraightTrajectory:
-    """
-    Simple straight-line trajectory.
-
-    Example:
-
-        start = (0, 0)
-        goal  = (50, 0)
-
-    The desired heading is automatically calculated.
-    """
-
-    def __init__(
+    def reset_wamv_pose(
         self,
-        start_x=-800.0,
-        start_y=450.0,
-        goal_x=-720.0,
-        goal_y=370.0,
-        desired_speed=1.0,
-    ):
+        x: float,
+        y: float,
+        z: float = 0.0,
+        yaw: float = 0.0,
+    ) -> bool:
+        """
+        Reset the physical WAM-V pose using Gazebo Transport.
 
-        self.start_x = start_x
-        self.start_y = start_y
+        VRX exposes /world/sydney_regatta/set_pose as a Gazebo service,
+        not as a ROS simulation_interfaces service.
+        """
 
-        self.goal_x = goal_x
-        self.goal_y = goal_y
+        qz = math.sin(yaw / 2.0)
+        qw = math.cos(yaw / 2.0)
 
-        self.desired_speed = desired_speed
-
-        self.heading = math.atan2(
-            goal_y - start_y,
-            goal_x - start_x
+        request = (
+            f'name: "{WAMV_NAME}", '
+            f'position: {{x: {x}, y: {y}, z: {z}}}, '
+            f'orientation: {{x: 0.0, y: 0.0, z: {qz}, w: {qw}}}'
         )
 
-    def get_reference(self):
+        command = [
+            "gz",
+            "service",
+            "-s",
+            f"/world/{WORLD_NAME}/set_pose",
+            "--reqtype",
+            "gz.msgs.Pose",
+            "--reptype",
+            "gz.msgs.Boolean",
+            "--timeout",
+            "3000",
+            "--req",
+            request,
+        ]
 
-        return {
-            "x": self.goal_x,
-            "y": self.goal_y,
-            "heading": self.heading,
-            "speed": self.desired_speed,
-        }
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            self.node.get_logger().error(f"Gazebo reset failed: {exc}")
+            return False
+
+        if result.returncode != 0:
+            self.node.get_logger().error(
+                f"Gazebo reset failed:\n{result.stderr}"
+            )
+            return False
+
+        output = (result.stdout + result.stderr).lower()
+
+        if "true" not in output:
+            self.node.get_logger().warn(
+                f"Gazebo reset command returned without confirmation:\n{output}"
+            )
+            return False
+
+        self.node.get_logger().info(
+            f"WAM-V reset to ({x:.2f}, {y:.2f}), yaw={yaw:.3f} rad"
+        )
+        return True
+
+    def reset_sensor_state(self):
+        """Clear values derived from measurements before waiting for fresh data."""
+        self.gps_lat = None
+        self.gps_lon = None
+        self.imu = None
+
+        self.prev_gps_x = None
+        self.prev_gps_y = None
+        self.prev_gps_time = None
+
+        self.u = 0.0
+        self.v = 0.0
+        self.r = 0.0
 
 
-# ============================================================
-# DRL Environment
-# ============================================================
+class WorldReference:
+    """
+    Convert the local GPS coordinate system into the VRX world coordinates.
+
+    The first valid GPS measurement is associated with:
+        (-800.32, 300.02)
+    """
+
+    def __init__(self):
+        self.initialized = False
+        self.offset_x = 0.0
+        self.offset_y = 0.0
+
+    def local_to_world(self, x_local, y_local):
+        if not self.initialized:
+            self.offset_x = START_WORLD_X - x_local
+            self.offset_y = START_WORLD_Y - y_local
+            self.initialized = True
+
+        return (
+            x_local + self.offset_x,
+            y_local + self.offset_y,
+        )
+
+
+class TrajectoryLogger:
+    """Save one episode trajectory to CSV."""
+
+    def __init__(self, filename="results/wamv_trajectory.csv"):
+        self.filename = filename
+        self.data = []
+
+    def start(self):
+        self.data = []
+
+    def log(
+        self,
+        step,
+        x,
+        y,
+        goal_x,
+        goal_y,
+        distance,
+        reward,
+        left_thrust,
+        right_thrust,
+        terminated,
+        truncated,
+    ):
+        self.data.append(
+            {
+                "step": step,
+                "x": x,
+                "y": y,
+                "goal_x": goal_x,
+                "goal_y": goal_y,
+                "distance": distance,
+                "reward": reward,
+                "left_thrust": left_thrust,
+                "right_thrust": right_thrust,
+                "terminated": terminated,
+                "truncated": truncated,
+            }
+        )
+
+    def save(self):
+        if not self.data:
+            return
+
+        os.makedirs(os.path.dirname(self.filename), exist_ok=True)
+
+        fieldnames = list(self.data[0].keys())
+
+        with open(self.filename, "w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(self.data)
+
+        print(f"Trajectory saved to: {self.filename}")
+
 
 class WamvEnv(gym.Env):
+    """
+    Gymnasium environment controlling the real VRX WAM-V.
 
-    metadata = {
-        "render_modes": []
-    }
+    Observation:
+        [error_x_body,
+         error_y_body,
+         heading_error,
+         u,
+         v,
+         r,
+         desired_speed]
+
+    Action:
+        [-1, 1] for left and right thrusters.
+
+    Mapping:
+        -1 -> 0 thrust
+         0 -> 500 thrust
+         1 -> 1000 thrust
+    """
+
+    metadata = {"render_modes": []}
 
     def __init__(
         self,
-        control_dt=0.2,
-        max_episode_time=120.0,
-        thruster_min=0.0,
-        thruster_max=1000.0,
+        control_dt: float = 0.2,
+        max_episode_time: float = 120.0,
     ):
-
         super().__init__()
-
-        # ----------------------------------------------------
-        # Timing
-        # ----------------------------------------------------
 
         self.control_dt = control_dt
         self.max_episode_time = max_episode_time
 
-        # ----------------------------------------------------
-        # Thruster limits
-        # ----------------------------------------------------
+        self.node = WamvNode()
+        self.reference = WorldReference()
 
-        self.thruster_min = thruster_min
-        self.thruster_max = thruster_max
+        self.trajectory_logger = TrajectoryLogger()
 
-        # ----------------------------------------------------
-        # Action space
-        #
-        # SAC will output:
-        #
-        # [-1, 1]
-        #
-        # We convert it to:
-        #
-        # [0, 1000]
-        # ----------------------------------------------------
-
-        self.action_space = spaces.Box(
+        self.action_space = gym.spaces.Box(
             low=-1.0,
             high=1.0,
             shape=(2,),
-            dtype=np.float32
+            dtype=np.float32,
         )
 
-        # ----------------------------------------------------
-        # Observation
-        #
-        # [ex,
-        #  ey,
-        #  epsi,
-        #  u,
-        #  v,
-        #  r,
-        #  desired_speed]
-        #
-        # Values are normalized/clipped to reasonable ranges.
-        # ----------------------------------------------------
-
-        self.observation_space = spaces.Box(
+        self.observation_space = gym.spaces.Box(
             low=-np.inf,
             high=np.inf,
             shape=(7,),
-            dtype=np.float32
+            dtype=np.float32,
         )
 
-        # ----------------------------------------------------
-        # ROS
-        # ----------------------------------------------------
+        self.goal_x = GOAL_WORLD_X
+        self.goal_y = GOAL_WORLD_Y
 
-        if not rclpy.ok():
-            rclpy.init()
-
-        self.node = WamvNode()
-
-        # ----------------------------------------------------
-        # Trajectory
-        # ----------------------------------------------------
-
-        self.trajectory = StraightTrajectory(
-            start_x=-800.0,
-            start_y=450.0,
-            goal_x=-720.0,
-            goal_y=370.0,
-            desired_speed=1.0,
-        )
-
+        self.episode_step = 0
         self.start_time = None
-
         self.previous_distance = None
 
-        self.previous_x = None
-        self.previous_y = None
+        self.current_x = START_WORLD_X
+        self.current_y = START_WORLD_Y
+        self.current_heading = 0.0
 
-    # ========================================================
-    # ROS update
-    # ========================================================
+    def spin_once(self):
+        rclpy.spin_once(
+            self.node.node,
+            timeout_sec=0.0,
+        )
 
-    def spin_ros(self, duration=0.05):
+    def wait_for_sensors(self, timeout=5.0):
+        start = time.monotonic()
 
-        """
-        Give ROS 2 time to process GPS/IMU messages.
-        """
-
-        end_time = time.monotonic() + duration
-
-        while time.monotonic() < end_time:
-
+        while time.monotonic() - start < timeout:
             rclpy.spin_once(
-                self.node,
-                timeout_sec=0.001
+                self.node.node,
+                timeout_sec=0.1,
             )
 
-    # ========================================================
-    # Convert action
-    # ========================================================
+            if (
+                self.node.gps_lat is not None
+                and self.node.imu is not None
+            ):
+                return True
 
-    def action_to_thrusters(self, action):
+        return False
 
-        """
-        SAC outputs actions in [-1, 1].
+    def get_world_position(self):
+        if self.node.gps_lat is None or self.node.gps_lon is None:
+            return self.current_x, self.current_y
 
-        Convert to physical thruster command.
+        x_local, y_local = self.node.gps_to_local(
+            self.node.gps_lat,
+            self.node.gps_lon,
+        )
 
-        Example with max=1000:
+        return self.reference.local_to_world(
+            x_local,
+            y_local,
+        )
 
-            -1 -> 0
-             0 -> 500
-            +1 -> 1000
-        """
+    def get_heading(self):
+        if self.node.imu is None:
+            return self.current_heading
+
+        q = self.node.imu.orientation
+
+        sin_yaw = 2.0 * (q.w * q.z + q.x * q.y)
+        cos_yaw = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+
+        return math.atan2(sin_yaw, cos_yaw)
+
+    @staticmethod
+    def angle_normalize(angle):
+        return math.atan2(
+            math.sin(angle),
+            math.cos(angle),
+        )
+
+    def get_observation(self):
+        self.current_x, self.current_y = self.get_world_position()
+        self.current_heading = self.get_heading()
+
+        dx = self.goal_x - self.current_x
+        dy = self.goal_y - self.current_y
+
+        # Transform position error from world frame to body frame.
+        cos_h = math.cos(self.current_heading)
+        sin_h = math.sin(self.current_heading)
+
+        error_x_body = cos_h * dx + sin_h * dy
+        error_y_body = -sin_h * dx + cos_h * dy
+
+        desired_heading = math.atan2(dy, dx)
+        heading_error = self.angle_normalize(
+            desired_heading - self.current_heading
+        )
+
+        return np.array(
+            [
+                error_x_body,
+                error_y_body,
+                heading_error,
+                self.node.u,
+                self.node.v,
+                self.node.r,
+                DESIRED_SPEED,
+            ],
+            dtype=np.float32,
+        )
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+
+        # Stop the WAM-V before moving it.
+        self.node.stop()
+
+        # Start heading points from the initial waypoint to the goal.
+        initial_heading = math.atan2(
+            self.goal_y - START_WORLD_Y,
+            self.goal_x - START_WORLD_X,
+        )
+
+        # Physically reset the WAM-V in Gazebo.
+        reset_ok = self.node.reset_wamv_pose(
+            x=START_WORLD_X,
+            y=START_WORLD_Y,
+            z=0.0,
+            yaw=initial_heading,
+        )
+
+        if not reset_ok:
+            raise RuntimeError("Could not reset WAM-V pose in Gazebo.")
+
+        # Do not reset gps_lat0/gps_lon0.
+        # They define the persistent GPS reference frame.
+        self.node.reset_sensor_state()
+
+        self.episode_step = 0
+        self.start_time = time.monotonic()
+        self.previous_distance = None
+
+        self.current_x = START_WORLD_X
+        self.current_y = START_WORLD_Y
+        self.current_heading = initial_heading
+
+        self.trajectory_logger.start()
+
+        # Wait for fresh measurements after teleporting.
+        if not self.wait_for_sensors(timeout=5.0):
+            self.node.stop()
+            raise RuntimeError(
+                "No fresh GPS/IMU measurements received after reset."
+            )
+
+        observation = self.get_observation()
+
+        distance = math.hypot(
+            self.goal_x - self.current_x,
+            self.goal_y - self.current_y,
+        )
+
+        self.previous_distance = distance
+
+        info = {
+            "x": self.current_x,
+            "y": self.current_y,
+            "distance_to_goal": distance,
+            "reset_ok": reset_ok,
+        }
+
+        return observation, info
+
+    def step(self, action):
+        action = np.asarray(action, dtype=np.float32)
 
         action = np.clip(
             action,
-            -1.0,
-            1.0
+            self.action_space.low,
+            self.action_space.high,
         )
 
-        normalized = (action + 1.0) / 2.0
+        # [-1, 1] -> [0, 1000]
+        left_thrust = float((action[0] + 1.0) * 500.0)
+        right_thrust = float((action[1] + 1.0) * 500.0)
 
-        thrusters = (
-            self.thruster_min
-            + normalized
-            * (
-                self.thruster_max
-                - self.thruster_min
-            )
+        self.node.publish_thrust(
+            left_thrust,
+            right_thrust,
         )
 
-        return thrusters
+        # Let Gazebo and ROS produce the next sensor measurements.
+        end_time = time.monotonic() + self.control_dt
 
-    # ========================================================
-    # Get observation
-    # ========================================================
-
-    def get_observation(self):
-
-        state = self.node.get_state()
-
-        reference = self.trajectory.get_reference()
-
-        # ----------------------------------------------------
-        # Position error in world frame
-        # ----------------------------------------------------
-
-        dx = reference["x"] - state["x"]
-        dy = reference["y"] - state["y"]
-
-        # ----------------------------------------------------
-        # Transform position error into body frame.
-        #
-        # This is important because the policy should know
-        # where the target is relative to the boat.
-        # ----------------------------------------------------
-
-        yaw = state["yaw"]
-
-        ex = (
-            math.cos(yaw) * dx
-            + math.sin(yaw) * dy
-        )
-
-        ey = (
-            -math.sin(yaw) * dx
-            + math.cos(yaw) * dy
-        )
-
-        # ----------------------------------------------------
-        # Heading error
-        # ----------------------------------------------------
-
-        epsi = wrap_angle(
-            reference["heading"]
-            - state["yaw"]
-        )
-
-        # ----------------------------------------------------
-        # Observation
-        # ----------------------------------------------------
-
-        obs = np.array(
-            [
-                ex,
-                ey,
-                epsi,
-                state["u"],
-                state["v"],
-                state["r"],
-                reference["speed"],
-            ],
-            dtype=np.float32
-        )
-
-        return obs
-
-    # ========================================================
-    # Reset
-    # ========================================================
-
-    def reset(
-        self,
-        *,
-        seed=None,
-        options=None
-    ):
-
-        super().reset(seed=seed)
-
-        # ----------------------------------------------------
-        # Important:
-        #
-        # This does NOT reset Gazebo's physical WAM-V pose.
-        #
-        # For now reset only resets the RL episode.
-        # Later we can add Gazebo model reset.
-        # ----------------------------------------------------
-
-        self.start_time = time.monotonic()
-
-        self.previous_distance = None
-
-        self.previous_x = None
-        self.previous_y = None
-
-        # Stop the boat before starting.
-        self.node.stop()
-
-        # Give ROS time to receive fresh data.
-        for _ in range(20):
-
-            self.spin_ros(0.01)
-
-            state = self.node.get_state()
-
-            if (
-                state["gps_received"]
-                and state["imu_received"]
-            ):
-                break
-
-        # ----------------------------------------------------
-        # Initial observation
-        # ----------------------------------------------------
-
-        obs = self.get_observation()
-
-        state = self.node.get_state()
-
-        reference = self.trajectory.get_reference()
-
-        distance = math.sqrt(
-            (reference["x"] - state["x"]) ** 2
-            + (reference["y"] - state["y"]) ** 2
-        )
-
-        self.previous_distance = distance
-
-        info = {
-            "x": state["x"],
-            "y": state["y"],
-            "yaw": state["yaw"],
-            "distance_to_goal": distance,
-        }
-
-        return obs, info
-
-    # ========================================================
-    # Step
-    # ========================================================
-
-    def step(self, action):
-
-        # ----------------------------------------------------
-        # Convert RL action to thruster values
-        # ----------------------------------------------------
-
-        left, right = self.action_to_thrusters(action)
-
-        # ----------------------------------------------------
-        # Send command to Gazebo/VRX
-        # ----------------------------------------------------
-
-        self.node.publish_thrusters(
-            left,
-            right
-        )
-
-        # ----------------------------------------------------
-        # Wait for the physical simulation to evolve.
-        #
-        # During this time GPS/IMU callbacks update the state.
-        # ----------------------------------------------------
-
-        start = time.monotonic()
-
-        while (
-            time.monotonic() - start
-            < self.control_dt
-        ):
-
+        while time.monotonic() < end_time:
             rclpy.spin_once(
-                self.node,
-                timeout_sec=0.01
+                self.node.node,
+                timeout_sec=0.02,
             )
 
-        # ----------------------------------------------------
-        # Get new state
-        # ----------------------------------------------------
+        self.episode_step += 1
 
-        state = self.node.get_state()
+        observation = self.get_observation()
 
-        reference = self.trajectory.get_reference()
-
-        # ----------------------------------------------------
-        # Position error
-        # ----------------------------------------------------
-
-        dx = reference["x"] - state["x"]
-        dy = reference["y"] - state["y"]
-
-        distance = math.sqrt(
-            dx * dx + dy * dy
+        distance = math.hypot(
+            self.goal_x - self.current_x,
+            self.goal_y - self.current_y,
         )
 
-        # ----------------------------------------------------
-        # Heading error
-        # ----------------------------------------------------
-
-        heading_error = abs(
-            wrap_angle(
-                reference["heading"]
-                - state["yaw"]
-            )
+        heading_error = float(observation[2])
+        speed = math.sqrt(
+            float(observation[3]) ** 2
+            + float(observation[4]) ** 2
         )
 
-        # ----------------------------------------------------
-        # Speed error
-        # ----------------------------------------------------
-
-        speed_error = abs(
-            reference["speed"]
-            - state["u"]
-        )
-
-        # ====================================================
-        # Reward
-        # ====================================================
-
-        # 1. Distance penalty
-        position_reward = -2.0 * distance
-
-        # 2. Heading penalty
-        heading_reward = -0.5 * heading_error
-
-        # 3. Speed penalty
-        speed_reward = -0.25 * speed_error
-
-        # 4. Progress reward
-        progress_reward = 0.0
-
-        if self.previous_distance is not None:
-
-            progress = (
-                self.previous_distance
-                - distance
-            )
-
-            progress_reward = (
-                2.0 * progress
-            )
-
-        # 5. Thruster effort penalty
-        effort = (
-            abs(left)
-            + abs(right)
-        ) / (
-            2.0 * self.thruster_max
-        )
-
-        effort_reward = -0.05 * effort
-
-        # ----------------------------------------------------
-        # Total reward
-        # ----------------------------------------------------
-
-        reward = (
-            position_reward
-            + heading_reward
-            + speed_reward
-            + progress_reward
-            + effort_reward
-        )
-
-        # ----------------------------------------------------
-        # Update distance
-        # ----------------------------------------------------
+        if self.previous_distance is None:
+            progress = 0.0
+        else:
+            progress = self.previous_distance - distance
 
         self.previous_distance = distance
 
-        # ====================================================
-        # Termination
-        # ====================================================
+        # Reward:
+        #   distance term      -> approach the goal
+        #   heading term       -> point toward the goal
+        #   speed term         -> approach desired speed
+        #   progress term      -> reward actual progress
+        #   effort term        -> avoid unnecessarily large thrust
+        reward = (
+            -2.0 * distance
+            -0.5 * abs(heading_error)
+            -0.25 * abs(speed - DESIRED_SPEED)
+            +2.0 * progress
+            -0.05 * (
+                abs(left_thrust) + abs(right_thrust)
+            ) / 1000.0
+        )
 
-        terminated = False
+        terminated = distance <= GOAL_TOLERANCE
 
-        # Goal reached
-        goal_tolerance = 2.0
+        elapsed = time.monotonic() - self.start_time
+        truncated = elapsed >= self.max_episode_time
 
-        if distance < goal_tolerance:
-
-            terminated = True
-
-            # Stop the WAM-V.
+        if terminated or truncated:
             self.node.stop()
 
-            self.get_logger_safe(
-                "Goal reached!"
-            )
+        self.trajectory_logger.log(
+            step=self.episode_step,
+            x=self.current_x,
+            y=self.current_y,
+            goal_x=self.goal_x,
+            goal_y=self.goal_y,
+            distance=distance,
+            reward=reward,
+            left_thrust=left_thrust,
+            right_thrust=right_thrust,
+            terminated=terminated,
+            truncated=truncated,
+        )
 
-        # Boat too far from trajectory/goal
-        '''failure_distance = 100.0
-
-        if distance > failure_distance:
-
-            terminated = True
-
-            self.node.stop()'''
-
-        # ====================================================
-        # Time limit
-        # ====================================================
-
-        truncated = False
-
-        if (
-            time.monotonic()
-            - self.start_time
-            >= self.max_episode_time
-        ):
-
-            truncated = True
-
-            self.node.stop()
-
-        # ----------------------------------------------------
-        # Observation for next step
-        # ----------------------------------------------------
-
-        obs = self.get_observation()
+        if terminated or truncated:
+            self.trajectory_logger.save()
 
         info = {
-            "x": state["x"],
-            "y": state["y"],
-            "yaw": state["yaw"],
-            "u": state["u"],
-            "v": state["v"],
-            "r": state["r"],
+            "x": self.current_x,
+            "y": self.current_y,
             "distance_to_goal": distance,
-            "left_thruster": left,
-            "right_thruster": right,
+            "heading_error": heading_error,
+            "speed": speed,
+            "progress": progress,
+            "elapsed_time": elapsed,
         }
 
         return (
-            obs,
+            observation,
             float(reward),
             terminated,
             truncated,
             info,
         )
 
-    # ========================================================
-    # Safe logger helper
-    # ========================================================
-
-    def get_logger_safe(self, message):
-
-        self.node.get_logger().info(message)
-
-    # ========================================================
-    # Close
-    # ========================================================
-
     def close(self):
-
         self.node.stop()
-
-        self.node.destroy_node()
+        self.trajectory_logger.save()
 
         if rclpy.ok():
-
+            self.node.node.destroy_node()
             rclpy.shutdown()
 
 
-# ============================================================
-# Simple test
-# ============================================================
-
 def main():
-
-    print("=" * 60)
-    print("WAM-V DRL ENVIRONMENT TEST")
-    print("=" * 60)
+    rclpy.init()
 
     env = WamvEnv(
         control_dt=0.2,
         max_episode_time=120.0,
-        thruster_min=0.0,
-        thruster_max=1000.0,
     )
 
     try:
+        observation, info = env.reset()
 
-        # ----------------------------------------------------
-        # Reset environment
-        # ----------------------------------------------------
+        print("Initial observation:", observation)
+        print("Initial info:", info)
 
-        obs, info = env.reset()
-
-        print("\nInitial observation:")
-        print(obs)
-
-        print("\nInitial info:")
-        print(info)
-
-        # ----------------------------------------------------
-        # Test a few actions
-        # ----------------------------------------------------
-
-        for i in range(1000):
-
-            # Example:
-            # both thrusters = 50% command
+        # Test with neutral action:
+        # [0, 0] -> left/right thrust = 500 / 500.
+        for step in range(100):
             action = np.array(
                 [0.0, 0.0],
-                dtype=np.float32
+                dtype=np.float32,
             )
 
-            obs, reward, terminated, truncated, info = (
-                env.step(action)
-            )
-
-            print(
-                f"\nStep {i + 1}"
+            observation, reward, terminated, truncated, info = env.step(
+                action
             )
 
             print(
-                f"Observation: {obs}"
-            )
-
-            print(
-                f"Reward: {reward:.3f}"
-            )
-
-            print(
-                f"Position: "
-                f"({info['x']:.3f}, "
-                f"{info['y']:.3f})"
-            )
-
-            print(
-                f"Velocity: "
-                f"u={info['u']:.3f}, "
-                f"v={info['v']:.3f}, "
-                f"r={info['r']:.3f}"
-            )
-
-            print(
-                f"Thrusters: "
-                f"L={info['left_thruster']:.1f}, "
-                f"R={info['right_thruster']:.1f}"
+                f"step={step:03d} "
+                f"x={info['x']:.2f} "
+                f"y={info['y']:.2f} "
+                f"distance={info['distance_to_goal']:.2f} "
+                f"reward={reward:.3f}"
             )
 
             if terminated or truncated:
-
-                print("\nEpisode finished.")
-
                 break
 
     finally:
-
         env.close()
 
-        print("\nEnvironment closed.")
-
-
-# ============================================================
-# Entry point
-# ============================================================
 
 if __name__ == "__main__":
-
     main()
