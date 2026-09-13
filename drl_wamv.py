@@ -130,72 +130,164 @@ class WamvNode:
         self.publish_thrust(0.0, 0.0)
 
     def reset_wamv_pose(
-        self,
-        x: float,
-        y: float,
-        z: float = 0.0,
-        yaw: float = 0.0,
+            self,
+            x: float,
+            y: float,
+            z: float = 0.0,
+            yaw: float = 0.0,
+            max_retries: int = 5,
     ) -> bool:
         """
-        Reset the physical WAM-V pose using Gazebo Transport.
+        Reset the WAM-V pose in Gazebo using Gazebo Transport.
 
-        VRX exposes /world/sydney_regatta/set_pose as a Gazebo service,
-        not as a ROS simulation_interfaces service.
+        Gazebo can occasionally be busy during long DRL training runs.
+        Therefore, the reset command is retried several times.
+
+        Returns
+        -------
+        bool
+            True  -> Gazebo confirmed the reset.
+            False -> all reset attempts failed.
         """
 
+        # ---------------------------------------------------------
+        # 1. Convert yaw angle to quaternion
+        # ---------------------------------------------------------
         qz = math.sin(yaw / 2.0)
         qw = math.cos(yaw / 2.0)
 
+        # ---------------------------------------------------------
+        # 2. Build the Gazebo Pose request
+        # ---------------------------------------------------------
         request = (
             f'name: "{WAMV_NAME}", '
             f'position: {{x: {x}, y: {y}, z: {z}}}, '
-            f'orientation: {{x: 0.0, y: 0.0, z: {qz}, w: {qw}}}'
+            f'orientation: {{'
+            f'x: 0.0, '
+            f'y: 0.0, '
+            f'z: {qz}, '
+            f'w: {qw}'
+            f'}}'
         )
 
+        # ---------------------------------------------------------
+        # 3. Gazebo service command
+        # ---------------------------------------------------------
         command = [
             "gz",
             "service",
+
             "-s",
             f"/world/{WORLD_NAME}/set_pose",
+
             "--reqtype",
             "gz.msgs.Pose",
+
             "--reptype",
             "gz.msgs.Boolean",
+
+            # Give Gazebo more time to answer
             "--timeout",
-            "3000",
+            "10000",
+
             "--req",
             request,
         ]
 
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=5.0,
+        # ---------------------------------------------------------
+        # 4. Try several times
+        # ---------------------------------------------------------
+        for attempt in range(1, max_retries + 1):
+
+            self.node.get_logger().info(
+                f"Resetting WAM-V "
+                f"(attempt {attempt}/{max_retries})..."
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            self.node.get_logger().error(f"Gazebo reset failed: {exc}")
-            return False
 
-        if result.returncode != 0:
-            self.node.get_logger().error(
-                f"Gazebo reset failed:\n{result.stderr}"
+            try:
+
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+
+                    # Python timeout must be larger than
+                    # the Gazebo CLI timeout.
+                    timeout=15.0,
+                )
+
+            except subprocess.TimeoutExpired:
+
+                self.node.get_logger().warn(
+                    f"Gazebo reset timed out "
+                    f"(attempt {attempt}/{max_retries})."
+                )
+
+                time.sleep(1.0)
+                continue
+
+            except FileNotFoundError:
+
+                self.node.get_logger().error(
+                    "The 'gz' command was not found. "
+                    "Make sure Gazebo is correctly sourced."
+                )
+
+                return False
+
+            # -----------------------------------------------------
+            # 5. Collect stdout + stderr
+            # -----------------------------------------------------
+            output = (
+                    result.stdout + "\n" + result.stderr
+            ).strip()
+
+            # -----------------------------------------------------
+            # 6. Check command execution
+            # -----------------------------------------------------
+            if result.returncode != 0:
+                self.node.get_logger().warn(
+                    f"Gazebo reset failed "
+                    f"(attempt {attempt}/{max_retries}).\n"
+                    f"{output}"
+                )
+
+                time.sleep(1.0)
+                continue
+
+            # -----------------------------------------------------
+            # 7. Check Gazebo confirmation
+            # -----------------------------------------------------
+            if "true" not in output.lower():
+                self.node.get_logger().warn(
+                    f"Gazebo reset returned without confirmation "
+                    f"(attempt {attempt}/{max_retries}).\n"
+                    f"{output}"
+                )
+
+                time.sleep(1.0)
+                continue
+
+            # -----------------------------------------------------
+            # 8. SUCCESS
+            # -----------------------------------------------------
+            self.node.get_logger().info(
+                f"WAM-V reset successfully to "
+                f"({x:.2f}, {y:.2f}), "
+                f"yaw={yaw:.3f} rad"
             )
-            return False
 
-        output = (result.stdout + result.stderr).lower()
+            return True
 
-        if "true" not in output:
-            self.node.get_logger().warn(
-                f"Gazebo reset command returned without confirmation:\n{output}"
-            )
-            return False
-
-        self.node.get_logger().info(
-            f"WAM-V reset to ({x:.2f}, {y:.2f}), yaw={yaw:.3f} rad"
+        # ---------------------------------------------------------
+        # 9. All attempts failed
+        # ---------------------------------------------------------
+        self.node.get_logger().error(
+            f"Could not reset WAM-V after "
+            f"{max_retries} attempts."
         )
-        return True
+
+        return False
 
     def reset_sensor_state(self):
         """Clear values derived from measurements before waiting for fresh data."""
