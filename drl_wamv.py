@@ -22,7 +22,7 @@ WAMV_NAME = "wamv"
 # WAM-V starting position
 # ---------------------------------------------------------
 START_WORLD_X = -800.0
-START_WORLD_Y = 450.0
+START_WORLD_Y = 451.0
 
 # ---------------------------------------------------------
 # Circuit waypoints (closed loop). Random targets are sampled
