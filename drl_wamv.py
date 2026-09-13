@@ -18,13 +18,34 @@ from std_msgs.msg import Float64
 WORLD_NAME = "sydney_regatta"
 WAMV_NAME = "wamv"
 
-START_WORLD_X = -800.32
-START_WORLD_Y = 300.02
-GOAL_WORLD_X = -720.0
-GOAL_WORLD_Y = 370.0
+# ---------------------------------------------------------
+# WAM-V starting position
+# ---------------------------------------------------------
+START_WORLD_X = -800.0
+START_WORLD_Y = 450.0
 
+# ---------------------------------------------------------
+# Circuit waypoints (closed loop). Random targets are sampled
+# INSIDE the area enclosed by this polygon.
+# ---------------------------------------------------------
+WAYPOINTS = [
+    (-800.0, 300.0),
+    (-720.0, 370.0),
+    (-700.0, 450.0),
+    (-750.0, 530.0),
+    (-900.0, 510.0),
+]
+
+# ---------------------------------------------------------
+# Navigation parameters
+# ---------------------------------------------------------
 DESIRED_SPEED = 1.0
 GOAL_TOLERANCE = 2.0
+
+# ---------------------------------------------------------
+# Reward parameters
+# ---------------------------------------------------------
+SUCCESS_BONUS = 100.0
 
 
 class WamvNode:
@@ -67,6 +88,10 @@ class WamvNode:
         self.u = 0.0
         self.v = 0.0
         self.r = 0.0
+
+        # Last published thrust values (used for the reward's effort term).
+        self.left_thrust = 0.0
+        self.right_thrust = 0.0
 
     def gps_callback(self, msg: NavSatFix):
         if not np.isfinite(msg.latitude) or not np.isfinite(msg.longitude):
@@ -125,6 +150,9 @@ class WamvNode:
 
         self.left_pub.publish(left_msg)
         self.right_pub.publish(right_msg)
+
+        self.left_thrust = float(left)
+        self.right_thrust = float(right)
 
     def stop(self):
         self.publish_thrust(0.0, 0.0)
@@ -303,6 +331,69 @@ class WamvNode:
         self.v = 0.0
         self.r = 0.0
 
+        self.left_thrust = 0.0
+        self.right_thrust = 0.0
+
+
+def point_in_polygon(x: float, y: float, polygon) -> bool:
+    """
+    Ray-casting point-in-polygon test.
+
+    `polygon` is a list of (x, y) tuples describing a closed
+    (or implicitly closed) simple polygon.
+    """
+    inside = False
+    n = len(polygon)
+
+    x1, y1 = polygon[0]
+
+    for i in range(1, n + 1):
+        x2, y2 = polygon[i % n]
+
+        if ((y1 > y) != (y2 > y)) and (
+            x < (x2 - x1) * (y - y1) / (y2 - y1) + x1
+        ):
+            inside = not inside
+
+        x1, y1 = x2, y2
+
+    return inside
+
+
+def polygon_bounding_box(polygon):
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def polygon_centroid(polygon):
+    """Simple average of vertices (good enough as a default goal)."""
+    pts = polygon[:-1] if polygon[0] == polygon[-1] else polygon
+
+    cx = sum(p[0] for p in pts) / len(pts)
+    cy = sum(p[1] for p in pts) / len(pts)
+
+    return cx, cy
+
+
+def sample_point_in_polygon(polygon, max_attempts: int = 1000):
+    """
+    Rejection-sample a random point strictly inside `polygon`,
+    using its bounding box as the proposal distribution.
+    """
+    x_min, x_max, y_min, y_max = polygon_bounding_box(polygon)
+
+    for _ in range(max_attempts):
+        x = np.random.uniform(x_min, x_max)
+        y = np.random.uniform(y_min, y_max)
+
+        if point_in_polygon(x, y, polygon):
+            return float(x), float(y)
+
+    # Fallback: centroid is always inside for a convex-ish polygon.
+    return polygon_centroid(polygon)
+
 
 class WorldReference:
     """
@@ -405,6 +496,10 @@ class WamvEnv(gym.Env):
         -1 -> 0 thrust
          0 -> 500 thrust
          1 -> 1000 thrust
+
+    The target position is now randomized within
+    [TARGET_X_MIN, TARGET_X_MAX] x [TARGET_Y_MIN, TARGET_Y_MAX]
+    at the start of every episode (see randomize_goal()).
     """
 
     metadata = {"render_modes": []}
@@ -438,8 +533,8 @@ class WamvEnv(gym.Env):
             dtype=np.float32,
         )
 
-        self.goal_x = GOAL_WORLD_X
-        self.goal_y = GOAL_WORLD_Y
+        # Current target (overwritten by randomize_goal() on every reset).
+        self.goal_x, self.goal_y = polygon_centroid(WAYPOINTS)
 
         self.episode_step = 0
         self.start_time = None
@@ -448,6 +543,14 @@ class WamvEnv(gym.Env):
         self.current_x = START_WORLD_X
         self.current_y = START_WORLD_Y
         self.current_heading = 0.0
+
+    def randomize_goal(self):
+        """Generate a new random target inside the WAYPOINTS circuit."""
+        self.goal_x, self.goal_y = sample_point_in_polygon(WAYPOINTS)
+
+        self.node.node.get_logger().info(
+            f"New target: ({self.goal_x:.2f}, {self.goal_y:.2f})"
+        )
 
     def spin_once(self):
         rclpy.spin_once(
@@ -539,16 +642,25 @@ class WamvEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
 
-        # Stop the WAM-V before moving it.
+        # -------------------------------------------------
+        # 1. Stop the WAM-V before moving it.
+        # -------------------------------------------------
         self.node.stop()
 
-        # Start heading points from the initial waypoint to the goal.
+        # -------------------------------------------------
+        # 2. Generate a new random target for this episode.
+        # -------------------------------------------------
+        self.randomize_goal()
+
+        # -------------------------------------------------
+        # 3. Reset the WAM-V to the fixed starting position,
+        #    heading toward the freshly sampled target.
+        # -------------------------------------------------
         initial_heading = math.atan2(
             self.goal_y - START_WORLD_Y,
             self.goal_x - START_WORLD_X,
         )
 
-        # Physically reset the WAM-V in Gazebo.
         reset_ok = self.node.reset_wamv_pose(
             x=START_WORLD_X,
             y=START_WORLD_Y,
@@ -559,8 +671,11 @@ class WamvEnv(gym.Env):
         if not reset_ok:
             raise RuntimeError("Could not reset WAM-V pose in Gazebo.")
 
-        # Do not reset gps_lat0/gps_lon0.
-        # They define the persistent GPS reference frame.
+        # -------------------------------------------------
+        # 4. Reset sensor state.
+        #    Do not reset gps_lat0/gps_lon0: they define the
+        #    persistent GPS reference frame.
+        # -------------------------------------------------
         self.node.reset_sensor_state()
 
         self.episode_step = 0
@@ -573,13 +688,18 @@ class WamvEnv(gym.Env):
 
         self.trajectory_logger.start()
 
-        # Wait for fresh measurements after teleporting.
+        # -------------------------------------------------
+        # 5. Wait for fresh measurements after teleporting.
+        # -------------------------------------------------
         if not self.wait_for_sensors(timeout=5.0):
             self.node.stop()
             raise RuntimeError(
                 "No fresh GPS/IMU measurements received after reset."
             )
 
+        # -------------------------------------------------
+        # 6. Build initial observation w.r.t. the NEW target.
+        # -------------------------------------------------
         observation = self.get_observation()
 
         distance = math.hypot(
@@ -592,6 +712,8 @@ class WamvEnv(gym.Env):
         info = {
             "x": self.current_x,
             "y": self.current_y,
+            "goal_x": self.goal_x,
+            "goal_y": self.goal_y,
             "distance_to_goal": distance,
             "reset_ok": reset_ok,
         }
@@ -665,6 +787,14 @@ class WamvEnv(gym.Env):
 
         terminated = distance <= GOAL_TOLERANCE
 
+        # Success bonus when the (randomized) goal is reached.
+        if terminated:
+            reward += SUCCESS_BONUS
+
+            self.node.node.get_logger().info(
+                f"Goal reached! Target=({self.goal_x:.2f}, {self.goal_y:.2f})"
+            )
+
         elapsed = time.monotonic() - self.start_time
         truncated = elapsed >= self.max_episode_time
 
@@ -691,6 +821,8 @@ class WamvEnv(gym.Env):
         info = {
             "x": self.current_x,
             "y": self.current_y,
+            "goal_x": self.goal_x,
+            "goal_y": self.goal_y,
             "distance_to_goal": distance,
             "heading_error": heading_error,
             "speed": speed,
@@ -745,6 +877,7 @@ def main():
                 f"step={step:03d} "
                 f"x={info['x']:.2f} "
                 f"y={info['y']:.2f} "
+                f"goal=({info['goal_x']:.2f}, {info['goal_y']:.2f}) "
                 f"distance={info['distance_to_goal']:.2f} "
                 f"reward={reward:.3f}"
             )
