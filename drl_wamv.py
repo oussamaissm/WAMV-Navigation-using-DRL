@@ -508,6 +508,7 @@ class WamvEnv(gym.Env):
         self,
         control_dt: float = 0.2,
         max_episode_time: float = 120.0,
+        trajectory_path: str = "results/wamv_trajectory.csv",
     ):
         super().__init__()
 
@@ -517,7 +518,7 @@ class WamvEnv(gym.Env):
         self.node = WamvNode()
         self.reference = WorldReference()
 
-        self.trajectory_logger = TrajectoryLogger()
+        self.trajectory_logger = TrajectoryLogger(filename=trajectory_path)
 
         self.action_space = gym.spaces.Box(
             low=-1.0,
