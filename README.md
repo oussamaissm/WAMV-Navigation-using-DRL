@@ -14,17 +14,14 @@ Deep reinforcement learning for autonomous point-to-point navigation of a **WAM-
 - [Evaluation Metrics](#evaluation-metrics)
 - [Results](#results)
 - [Analysis](#analysis)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Project Structure](#project-structure)
-- [Future Work](#future-work)
-- [License](#license)
 
 ---
 
 ## Overview
 
 The goal of this project is to learn a control policy that drives the WAM-V from a fixed start position to a target position, without a hand-tuned controller. Policies are trained with model-free DRL and evaluated on four random goal points inside a polygonal circuit.
+
+
 
 ## Task Description
 
@@ -41,10 +38,9 @@ The goal of this project is to learn a control policy that drives the WAM-V from
 
 | Algorithm | Type |
 |---|---|
-| **SAC** (Soft Actor-Critic) | Off-policy, maximum entropy |
-| **PPO** (Proximal Policy Optimization) | On-policy, clipped objective |
-| **TD3** (Twin Delayed DDPG) | Off-policy, deterministic |
-
+| **PPO** (Proximal Policy Optimization) | On-policy, stochastic actor, clipped policy objective, GAE |
+| **SAC** (Soft Actor-Critic) | Off-policy, stochastic actor, twin critics, entropy regularization, automatic temperature tuning |
+| **TD3** (Twin Delayed DDPG) | Off-policy, deterministic actor, twin critics, target policy smoothing, delayed policy updates |
 ## Evaluation Metrics
 
 Each policy is evaluated on the four goal points (P1 to P4), and the mean over them is reported:
@@ -67,32 +63,3 @@ In the bar charts, **faded bars mean the goal was not reached** for that point; 
 Squares mark the final rest position of each vehicle.
 
 ![Trajectories](Test%20results/trajectories.png)
-
-### Summary
-
-| Metric | SAC | PPO | TD3 |
-|---|---|---|---|
-| Mean time to goal [s] | ~293 | ~382 | ~382 |
-| Mean path length [m] | ~265 | ~625 | ~195 |
-| Mean rest distance [m] | ~36 | **~5** | ~190 |
-| Mean total reward | ~-110,000 | **~-38,000** | ~-640,000 |
-
-## Installation
-
-```bash
-git clone https://github.com/<your-user>/<your-repo>.git
-cd <your-repo>
-python3 -m venv venv
-source venv/bin/activate
-pip3 install -r requirements.txt
-```
-
-## Usage
-
-```bash
-# Train
-python3 train.py --algo sac   # or ppo / td3
-
-# Evaluate and generate plots
-python3 evaluate.py --algo sac ppo td3
-```
