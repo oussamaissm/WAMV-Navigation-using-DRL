@@ -122,3 +122,4 @@ class SACAgent:
         self.t2.load_state_dict(torch.load(f"{directory}/target_critic2.pt",**kw))
         p=f"{directory}/log_alpha.pt"
         if os.path.exists(p): self.log_alpha.data.copy_(torch.load(p,map_location=self.device,weights_only=True))
+
