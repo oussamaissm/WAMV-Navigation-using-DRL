@@ -24,7 +24,7 @@ Deep reinforcement learning for autonomous point-to-point navigation of a **WAM-
 
 ## Overview
 
-The goal of this project is to learn a control policy that drives the WAM-V from a fixed start position to a target position, without a hand-tuned controller. Policies are trained with model-free DRL and evaluated on four unseen goal points inside a polygonal circuit.
+The goal of this project is to learn a control policy that drives the WAM-V from a fixed start position to a target position, without a hand-tuned controller. Policies are trained with model-free DRL and evaluated on four random goal points inside a polygonal circuit.
 
 ## Task Description
 
@@ -68,13 +68,12 @@ In the bar charts, **faded bars mean the goal was not reached** for that point; 
 
 Squares mark the final rest position of each vehicle.
 
-![Trajectories](assets/trajectories.png)
+![Trajectories](Test%20results/trajectories.png)
 
-### Summary (approximate values read from the plots)
+### Summary
 
 | Metric | SAC | PPO | TD3 |
 |---|---|---|---|
-| Goals reached (of 4) | **1** (P4) | 0 | 0 |
 | Mean time to goal [s] | ~293 | ~382 | ~382 |
 | Mean path length [m] | ~265 | ~625 | ~195 |
 | Mean rest distance [m] | ~36 | **~5** | ~190 |
