@@ -217,12 +217,12 @@ unique training pairs.
 The probability that trajectory $i$ is preferred over trajectory $j$ is modeled as:
 
 ```math
-P(i\succ j) = \operatorname{sigmoid}\left(\beta\,\mathbf{w}^{T}(\mathbf{s}_i-\mathbf{s}_j)\right)
+P(i\succ j) = \text{sigmoid}\left(\beta\,\mathbf{w}^{T}(\mathbf{s}_i-\mathbf{s}_j)\right)
 ```
 
 where:
 
-* $\operatorname{sigmoid}(x)=1/(1+e^{-x})$ is the sigmoid function,
+* $\text{sigmoid}(x)=1/(1+e^{-x})$ is the sigmoid function,
 * $\mathbf{w}=[w_D,w_P,w_H]$ contains the reward weights,
 * $\beta$ is a learned inverse-temperature parameter,
 * $\mathbf{s}_i-\mathbf{s}_j$ is the feature difference between the two trajectories.
