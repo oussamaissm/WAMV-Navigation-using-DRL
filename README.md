@@ -188,13 +188,23 @@ w_D+w_P+w_H=1, \qquad w_D,w_P,w_H\geq 0.
 
 The weights therefore represent the relative importance of distance, progress, and heading quality.
 
-### 4. Preference generation
+### 4. Trajectory-quality function and preference generation
 
-The trajectories are ranked according to a trajectory-quality function. For every unique pair of trajectories $i<j$, the higher-quality trajectory is considered preferred:
+Preference labels come from a reference **trajectory-quality function** $Q(\tau)$ applied to the standardized raw features $z(D)$, $z(P)$, $z(H)$ (higher $Q$ means a better trajectory). It combines a linear term with nonlinear penalties on distance and heading error:
 
 ```math
-i \succ j.
+Q(\tau) = -z(D) + z(P) - z(H) - z(D)^2 - z(H)^2 - z(D)\,z(H)
 ```
+
+The linear part rewards low distance, high progress, and low heading error. The quadratic terms penalize large distance and heading errors more strongly, and the cross term penalizes trajectories that are bad in both.
+
+For every unique pair of trajectories $i<j$ in the training set, the trajectory with the higher quality score is labeled as preferred:
+
+```math
+i \succ j \iff Q(\tau_i) > Q(\tau_j).
+```
+
+The Bradley–Terry model never sees $Q$. It only receives the pairwise preferences and the sign-adjusted features $\mathbf{s}$, and fits a **linear** reward to them. Because $Q$ is nonlinear, the learned weights $w^*$ are the best linear approximation of the preference ordering, not an exact recovery of $Q$.
 
 For $N_{\text{train}}$ training trajectories, this produces
 
