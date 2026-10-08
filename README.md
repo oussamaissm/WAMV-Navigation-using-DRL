@@ -93,56 +93,44 @@ Squares mark the final rest position of each vehicle.
 
 ## Reward Weight Optimization
 
-In some experiments, the USV performed inefficient turns or spent too much time correcting its heading. To address this, we first generated diverse trajectories using a stochastic point-mass model and extracted trajectory-level quality features. We then formulated a **Bradley–Terry preference-learning problem** and optimized the corresponding loss to estimate the relative importance of the reward components.
+In some experiments, the WAM-V could take inefficient turns or spend too much time correcting its heading. To improve the reward design, a data-driven procedure was used to estimate the relative importance of the main trajectory-quality features rather than relying entirely on manually selected reward coefficients.
+
+The procedure generates a large set of simulated trajectories, extracts trajectory-level quality features, constructs pairwise preferences between trajectories, and learns reward weights using a **Bradley–Terry preference model**.
 
 > **Note:** The current experiment uses a simplified point-mass simulator with drift and stochastic noise. It is used only to study reward-weight estimation and does not reproduce the full WAM-V/VRX dynamics.
 
-### 1. Trajectory Generation
+### 1. Trajectory generation
 
 A total of $N=10{,}000$ trajectories are generated from the same initial position toward a common target.
 
 The simplified dynamics are:
 
-$$
-\mathbf{p}_{t+1}
-=
-\mathbf{p}_t
-+
-d
-\frac{\mathbf{g}-\mathbf{p}_t}
-{\left\lVert\mathbf{g}-\mathbf{p}_t\right\rVert}
-\Delta t
-+
-\sigma\sqrt{\Delta t}\boldsymbol{\epsilon}_t
-$$
+```math
+\mathbf{p}_{t+1} = \mathbf{p}_t + d\,\frac{\mathbf{g}-\mathbf{p}_t}{\lVert\mathbf{g}-\mathbf{p}_t\rVert}\,\Delta t + \sigma\sqrt{\Delta t}\,\boldsymbol{\epsilon}_t
+```
 
 where:
 
-- $\mathbf{p}_t$ is the trajectory position.
-- $\mathbf{g}$ is the target position.
-- $d=0.5$ is the drift magnitude.
-- $\sigma=1$ controls stochastic noise.
-- $\Delta t=0.1$ s.
-- $\boldsymbol{\epsilon}_t\sim\mathcal{N}(0,I)$.
+* $\mathbf{p}_t$ is the trajectory position,
+* $\mathbf{g}$ is the target position,
+* $d=0.5$ is the drift magnitude,
+* $\sigma=1$ controls stochastic noise,
+* $\Delta t=0.1$ s,
+* $\boldsymbol{\epsilon}_t\sim\mathcal{N}(0,I)$.
 
 Each trajectory contains 800 simulation steps.
 
-### 2. Trajectory-Quality Features
+### 2. Trajectory-quality features
 
-Three trajectory-level features are extracted.
+Three trajectory-level features are extracted:
 
 #### Distance $D$
 
 The average normalized distance to the target:
 
-$$
-D
-=
-\frac{1}{T+1}
-\sum_{t=0}^{T}
-\frac{\left\lVert\mathbf{g}-\mathbf{p}_t\right\rVert}
-{d_0}
-$$
+```math
+D = \frac{1}{T+1}\sum_{t=0}^{T}\frac{\lVert\mathbf{g}-\mathbf{p}_t\rVert}{d_0}
+```
 
 where $d_0$ is the initial distance to the target.
 
@@ -152,286 +140,193 @@ Lower $D$ indicates better navigation.
 
 Progress toward the target normalized by the travelled path length:
 
-$$
-P
-=
-\frac{d_0-d_T}
-{\max(L,\epsilon)}
-$$
+```math
+P = \frac{d_0-d_T}{\max(L,\epsilon)}
+```
 
 where $d_T$ is the final distance to the target and $L$ is the total travelled distance.
 
 Higher $P$ indicates better navigation.
 
-#### Heading Error $H$
+#### Heading error $H$
 
 Heading error is measured every $K=20$ simulation steps:
 
-$$
-H
-=
-\frac{1}{N_c}
-\sum_{k=1}^{N_c}
-\frac{\left\lvert e_{\psi,k}\right\rvert}{\pi}
-$$
+```math
+H = \frac{1}{N_c}\sum_{k=1}^{N_c}\frac{\lvert e_{\psi,k}\rvert}{\pi}
+```
 
 where $e_{\psi,k}$ is the wrapped heading error and $N_c$ is the number of heading-error measurements.
 
 Lower $H$ indicates better heading alignment.
 
-### 3. Normalization and Sign Convention
+### 3. Normalization and sign convention
 
 The three features are standardized using statistics computed only on the training set:
 
-$$
-z_f
-=
-\frac{f-\mu_f}{\sigma_f}
-$$
+```math
+z_f = \frac{f-\mu_f}{\sigma_f}
+```
 
 Because the three metrics do not have the same optimization direction, they are sign-adjusted so that **higher values always represent better trajectories**:
 
-$$
-\mathbf{s}
-=
-\begin{bmatrix}
--z(D)\\
-+z(P)\\
--z(H)
-\end{bmatrix}
-$$
+```math
+\mathbf{s} = \begin{bmatrix} -z(D) \\ +z(P) \\ -z(H) \end{bmatrix}
+```
 
-The trajectory score is then modeled as:
+Thus, a linear reward model can be written as:
 
-$$
-G(\tau)
-=
-\beta
-\left(
--w_D z(D)
-+w_P z(P)
--w_H z(H)
-\right)
-$$
+```math
+G(\tau) = \beta\left(-w_D\,z(D) + w_P\,z(P) - w_H\,z(H)\right)
+```
 
-with:
+with
 
-$$
-w_D+w_P+w_H=1
-$$
-
-and:
-
-$$
-w_D,w_P,w_H\geq0
-$$
+```math
+w_D+w_P+w_H=1, \qquad w_D,w_P,w_H\geq 0.
+```
 
 The weights therefore represent the relative importance of distance, progress, and heading quality.
 
-### 4. Preference Generation
+### 4. Preference generation
 
 The trajectories are ranked according to a trajectory-quality function. For every unique pair of trajectories $i<j$, the higher-quality trajectory is considered preferred:
 
-$$
-i\succ j
-$$
+```math
+i \succ j.
+```
 
-For $N_{\text{train}}$ training trajectories, this produces:
+For $N_{\text{train}}$ training trajectories, this produces
 
-$$
-|\mathcal{P}|
-=
-\frac{N_{\text{train}}
-\left(N_{\text{train}}-1\right)}
-{2}
-$$
+```math
+\lvert\mathcal{P}\rvert = \frac{N_{\text{train}}(N_{\text{train}}-1)}{2}
+```
 
 pairwise comparisons.
 
-With 8,000 training trajectories:
+With 8,000 training trajectories, this corresponds to:
 
-$$
-|\mathcal{P}|
-=
-\frac{8000\times7999}{2}
-=
-31{,}996{,}000
-$$
+```math
+\lvert\mathcal{P}\rvert = \frac{8000\times 7999}{2} = 31{,}996{,}000
+```
 
-unique training pairs are evaluated.
+unique training pairs.
 
-### 5. Bradley–Terry Preference Model
+### 5. Bradley–Terry preference model
 
-The probability that trajectory $i$ is preferred over trajectory $j$ is modeled using the Bradley–Terry model:
+The probability that trajectory $i$ is preferred over trajectory $j$ is modeled as:
 
-$$
-P(i\succ j)
-=
-\sigma
-\left(
-\beta
-\mathbf{w}^{T}
-\left(
-\mathbf{s}_i-\mathbf{s}_j
-\right)
-\right)
-$$
+```math
+P(i\succ j) = \operatorname{sigmoid}\left(\beta\,\mathbf{w}^{T}(\mathbf{s}_i-\mathbf{s}_j)\right)
+```
 
 where:
 
-- $\sigma(x)=\frac{1}{1+e^{-x}}$ is the sigmoid function.
-- $\mathbf{w}=[w_D,w_P,w_H]$ contains the reward weights.
-- $\beta$ is a learned inverse-temperature parameter.
-- $\mathbf{s}_i-\mathbf{s}_j$ is the feature difference between the two trajectories.
+* $\operatorname{sigmoid}(x)=1/(1+e^{-x})$ is the sigmoid function,
+* $\mathbf{w}=[w_D,w_P,w_H]$ contains the reward weights,
+* $\beta$ is a learned inverse-temperature parameter,
+* $\mathbf{s}_i-\mathbf{s}_j$ is the feature difference between the two trajectories.
 
 The corresponding negative log-likelihood is:
 
-$$
-\mathcal{L}(\mathbf{w},\beta)
-=
-\frac{1}{|\mathcal{P}|}
-\sum_{(i,j)\in\mathcal{P}}
-\log
-\left[
-1+
-\exp
-\left(
--\beta
-\mathbf{w}^{T}
-\left(
-\mathbf{s}_i-\mathbf{s}_j
-\right)
-\right)
-\right]
-$$
+```math
+\mathcal{L}(\mathbf{w},\beta) = \frac{1}{\lvert\mathcal{P}\rvert}\sum_{(i,j)\in\mathcal{P}}\log\left[1+\exp\left(-\beta\,\mathbf{w}^{T}(\mathbf{s}_i-\mathbf{s}_j)\right)\right].
+```
 
-The optimization problem is:
+The optimization problem is therefore:
 
-$$
-\min_{\mathbf{w},\beta}
-\mathcal{L}(\mathbf{w},\beta)
-$$
+```math
+\min_{\mathbf{w},\beta}\ \mathcal{L}(\mathbf{w},\beta)
+```
 
 subject to:
 
-$$
-w_D+w_P+w_H=1
-$$
+```math
+w_D+w_P+w_H=1,
+```
 
-$$
-w_D,w_P,w_H\geq0
-$$
+```math
+w_D,w_P,w_H\geq 0,
+```
 
-and:
+and
 
-$$
-0.1\leq\beta\leq200
-$$
+```math
+0.1\leq\beta\leq 200.
+```
 
-### 6. Optimization Methodology
+### 6. Optimization methodology
 
 The parameters are optimized using **Sequential Least Squares Programming (SLSQP)**.
 
 The optimization variables are:
 
-$$
-\mathbf{x}
-=
-[w_D,w_P,w_H,\log\beta]
-$$
+```math
+\mathbf{x} = [w_D,w_P,w_H,\log\beta].
+```
 
 Using $\log\beta$ guarantees that the temperature remains positive:
 
-$$
-\beta=e^{\log\beta}
-$$
+```math
+\beta = e^{\log\beta}.
+```
 
 The exact loss and its gradient are evaluated over **all unique trajectory pairs**. To avoid storing all pairwise differences simultaneously, the pairs are processed in blocks of 512 trajectories.
 
 This provides:
 
-- Exact all-pairs maximum-likelihood estimation.
-- $O(N^2)$ computational complexity.
-- Reduced memory usage through block processing.
+* exact all-pairs maximum-likelihood estimation,
+* $O(N^2)$ computational complexity,
+* substantially lower memory usage through block processing.
 
 The learned parameters are:
 
-$$
-\boldsymbol{\theta}^{*}
-=
-(w_D^{*},w_P^{*},w_H^{*})
-$$
+```math
+\theta^* = (w_D^*,w_P^*,w_H^*)
+```
 
-and:
+and
 
-$$
-\beta^{*}
-$$
+```math
+\beta^*.
+```
 
-### 7. Equivalent Reward Coefficients
+### 7. Equivalent reward coefficients
 
 Because the optimization is performed on z-scored features, the learned model can also be expressed in terms of the original raw features.
 
 Starting from:
 
-$$
-G
-=
-\beta
-\left(
--w_Dz(D)
-+w_Pz(P)
--w_Hz(H)
-\right)
-$$
+```math
+G = \beta\left(-w_D\,z(D) + w_P\,z(P) - w_H\,z(H)\right)
+```
 
-and using:
+and using
 
-$$
-z(f)
-=
-\frac{f-\mu_f}{\sigma_f}
-$$
+```math
+z(f)=\frac{f-\mu_f}{\sigma_f},
+```
 
 the equivalent raw-feature reward is:
 
-$$
-G
-=
--a_DD
-+a_PP
--a_HH
-+C
-$$
+```math
+G = -a_D D + a_P P - a_H H + C
+```
 
 where:
 
-$$
-a_D
-=
-\frac{\beta w_D}{\sigma_D}
-$$
-
-$$
-a_P
-=
-\frac{\beta w_P}{\sigma_P}
-$$
-
-$$
-a_H
-=
-\frac{\beta w_H}{\sigma_H}
-$$
+```math
+a_D=\frac{\beta w_D}{\sigma_D}, \qquad a_P=\frac{\beta w_P}{\sigma_P}, \qquad a_H=\frac{\beta w_H}{\sigma_H}.
+```
 
 The constant $C$ does not affect the relative ranking of trajectories.
 
-### 8. Train/Test Methodology
+### 8. Train/test methodology
 
 The 10,000 trajectories are randomly divided into:
 
-- **80% training trajectories**
-- **20% held-out test trajectories**
+* **80% training trajectories**
+* **20% held-out test trajectories**
 
 The feature normalization statistics are computed exclusively from the training set to avoid data leakage.
 
@@ -441,57 +336,33 @@ The reward weights and temperature are learned only from the training trajectori
 
 The optimization produces the learned reward parameters:
 
-$$
-\boldsymbol{\theta}^{*}
-=
-(w_D^{*},w_P^{*},w_H^{*})
-$$
-
-and:
-
-$$
-\beta^{*}
-$$
+```math
+\theta^* = (w_D^*,w_P^*,w_H^*) \quad \text{and} \quad \beta^*.
+```
 
 The resulting reward model is:
 
-$$
-G(\tau)
-=
-\beta^{*}
-\left[
--w_D^{*}z(D)
-+w_P^{*}z(P)
--w_H^{*}z(H)
-\right]
-$$
+```math
+G(\tau) = \beta^*\left[-w_D^*\,z(D) + w_P^*\,z(P) - w_H^*\,z(H)\right]
+```
 
 The experiment reports the following results:
 
-| Result | Description |
-|---|---|
-| $w_D^{*}$ | Learned importance of distance-to-goal |
-| $w_P^{*}$ | Learned importance of progress |
-| $w_H^{*}$ | Learned importance of heading quality |
-| $\beta^{*}$ | Learned preference confidence / inverse temperature |
-| Training loss | Bradley–Terry negative log-likelihood on all training pairs |
-| Test loss | Bradley–Terry negative log-likelihood on all held-out pairs |
+| Result            | Description                                                                    |
+| ----------------- | ------------------------------------------------------------------------------ |
+| $w_D^*$           | Learned importance of distance-to-goal                                         |
+| $w_P^*$           | Learned importance of progress                                                 |
+| $w_H^*$           | Learned importance of heading quality                                          |
+| $\beta^*$         | Learned preference confidence / inverse temperature                            |
+| Training loss     | Bradley–Terry negative log-likelihood on all training pairs                    |
+| Test loss         | Bradley–Terry negative log-likelihood on all held-out pairs                    |
 | Pairwise accuracy | Percentage of held-out trajectory pairs correctly ranked by the learned reward |
 
 The pairwise accuracy is computed as:
 
-$$
-\text{Accuracy}
-=
-\frac{
-\#\left\{
-(i,j):
-G(\tau_i)>G(\tau_j)
-\right\}
-}{
-|\mathcal{P}_{\text{test}}|
-}
-$$
+```math
+\text{Accuracy} = \frac{\left\lvert\{(i,j):G(\tau_i)>G(\tau_j)\}\right\rvert}{\lvert\mathcal{P}_{\text{test}}\rvert}.
+```
 
 This provides a direct measure of how well the learned reward reproduces the preference ordering on unseen trajectories.
 
@@ -501,6 +372,6 @@ The learned weights provide a quantitative indication of which trajectory charac
 
 For example, a larger $w_H$ means that heading quality contributes more strongly to the learned trajectory ranking, while a larger $w_P$ indicates that progress is more influential.
 
-This approach can therefore be used as a **reward-design methodology** for the WAM-V DRL environment. Instead of selecting reward coefficients entirely by hand, trajectory preferences can be used to estimate the relative importance of the different reward components.
+This approach can therefore be used as a **reward-design methodology** for the WAM-V DRL environment: instead of selecting reward coefficients entirely by hand, trajectory preferences can be used to estimate the relative importance of the different reward components.
 
-The learned coefficients can subsequently be incorporated into the DRL reward function and evaluated with **SAC, PPO, and TD3**.
+The learned coefficients can subsequently be incorporated into the DRL reward function and evaluated with SAC, PPO, and TD3.
