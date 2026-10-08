@@ -106,7 +106,6 @@ class RolloutBuffer:
 
     def reset(self): self.ptr=0
 
-
 class PPOAgent:
     def __init__(self,state_dim,action_dim,gamma=.99,lam=.95,clip_eps=.2,
                  actor_lr=3e-4,critic_lr=1e-3,entropy_coef=0.0,value_coef=.5,
