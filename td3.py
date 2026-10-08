@@ -126,3 +126,4 @@ class TD3Agent:
         self.c2.load_state_dict(torch.load(f"{directory}/critic2.pt",**kw))
         self.t1.load_state_dict(torch.load(f"{directory}/target_critic1.pt",**kw))
         self.t2.load_state_dict(torch.load(f"{directory}/target_critic2.pt",**kw))
+
