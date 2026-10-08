@@ -29,3 +29,4 @@ class ReplayBuffer:
         np.savez_compressed(path,states=self.states[:self.size],
             actions=self.actions[:self.size],rewards=self.rewards[:self.size],
             next_states=self.next_states[:self.size],dones=self.dones[:self.size])
+
