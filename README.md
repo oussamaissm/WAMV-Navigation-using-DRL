@@ -33,28 +33,26 @@ The goal of this project is to learn a control policy that drives the WAM-V from
 | Vehicle | WAM-V USV |
 | Start position | (-800, 450) m |
 | Goal points | P1 (-825.1, 518.7), P2 (-753.6, 437.7), P3 (-888.4, 499.2), P4 (-839.2, 420.7) |
-| Episode time limit | ~383 s (episodes that hit this limit count as "goal not reached") |
-| Action space | `TODO` (e.g. thrust / rudder, continuous) |
-| Observation space | `TODO` (e.g. relative goal position, heading, velocities) |
-| Reward | `TODO` (describe shaping: distance term, heading term, penalties...) |
-| Simulator | `TODO` (e.g. Gazebo / VRX / custom) |
+| Action space | Continuous \(\mathbf{a}_t = [a_L, a_R] \in [-1,1]^2\), mapped to left/right thruster thrust \([0,1000]\) |
+| Observation space | \(\mathbf{o}_t = [e_x^b, e_y^b, e_\psi, u, v, r, v_d]\): body-frame goal position error, heading error, surge/sway velocities, yaw rate, and desired speed |
+| Reward | \(R_t = -2.0d_t - 0.5|e_{\psi,t}| - 0.25|v_t-v_d| + 2.0\Delta d_t - 0.05\frac{|T_L|+|T_R|}{1000}\) || Simulator | Gazebo / VRX |
 
 ## Algorithms
 
-| Algorithm | Type | Notes |
-|---|---|---|
-| **SAC** (Soft Actor-Critic) | Off-policy, maximum entropy | `TODO: hyperparameters` |
-| **PPO** (Proximal Policy Optimization) | On-policy, clipped objective | `TODO: hyperparameters` |
-| **TD3** (Twin Delayed DDPG) | Off-policy, deterministic | `TODO: hyperparameters` |
+| Algorithm | Type |
+|---|---|
+| **SAC** (Soft Actor-Critic) | Off-policy, maximum entropy |
+| **PPO** (Proximal Policy Optimization) | On-policy, clipped objective |
+| **TD3** (Twin Delayed DDPG) | Off-policy, deterministic |
 
 ## Evaluation Metrics
 
 Each policy is evaluated on the four goal points (P1 to P4), and the mean over them is reported:
 
-- **Time to goal [s]**: time until the goal is reached (or the time limit if it is not).
+- **Time to goal [s]**: time until the goal is reached.
 - **Path length [m]**: total distance travelled.
 - **Rest distance to goal [m]**: distance between the final position and the goal.
-- **Total reward**: cumulative episode reward (closer to 0 is better).
+- **Total reward**: cumulative episode reward.
 
 In the bar charts, **faded bars mean the goal was not reached** for that point; solid bars are successful runs (and the means).
 
@@ -79,70 +77,22 @@ Squares mark the final rest position of each vehicle.
 | Mean rest distance [m] | ~36 | **~5** | ~190 |
 | Mean total reward | ~-110,000 | **~-38,000** | ~-640,000 |
 
-### Per-point results (approximate)
-
-| Point | Metric | SAC | PPO | TD3 |
-|---|---|---|---|---|
-| P1 | Rest distance [m] | ~49 | ~5 | ~165 |
-| P2 | Rest distance [m] | ~32 | ~5 | ~178 |
-| P3 | Rest distance [m] | ~64 | ~6 | ~197 |
-| P4 | Rest distance [m] | ~1 (reached, ~30 s) | ~5 | ~222 |
-
-## Analysis
-
-- **SAC** is the only algorithm that reached a goal (P4, in about 30 s with a ~47 m path, which is nearly a straight line). On P1 to P3 it overshoots the goal and makes large loops or spirals (especially on P2) and ends up 30 to 65 m away. It can solve the task but is inconsistent across goals.
-- **PPO** gets closest to the goal on every point (about 5 m) and has the best mean reward, but never satisfies the goal condition. The trajectories show a near-straight approach followed by small circles around the goal. The ~620 to 640 m path lengths come from this loitering for the rest of the episode, not from a poor route. It looks like a station-keeping behaviour that does not settle within the goal tolerance.
-- **TD3** fails to converge. It leaves the start along a curved path and finishes 165 to 220 m from the goal, far outside the circuit, which gives by far the worst reward.
-- Overall, no algorithm is reliably successful yet. PPO is the most consistent in approach, SAC the only one with a successful run, and TD3 the weakest in this configuration.
-
-> Caveat: results come from a single evaluation per goal point. Averaging over multiple seeds and episodes is needed before drawing firm conclusions.
-
 ## Installation
 
 ```bash
 git clone https://github.com/<your-user>/<your-repo>.git
 cd <your-repo>
-python -m venv venv
+python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 ```
-
-`TODO`: add simulator / ROS / Gazebo installation steps if required.
 
 ## Usage
 
 ```bash
 # Train
-python train.py --algo sac   # or ppo / td3
+python3 train.py --algo sac   # or ppo / td3
 
 # Evaluate and generate plots
-python evaluate.py --algo sac ppo td3
+python3 evaluate.py --algo sac ppo td3
 ```
-
-`TODO`: replace with your actual scripts and arguments.
-
-## Project Structure
-
-```
-.
-├── assets/
-│   ├── metrics.png          # metric comparison plots
-│   └── trajectories.png     # trajectory plots
-├── train.py                 # TODO
-├── evaluate.py              # TODO
-├── envs/                    # TODO: WAM-V environment
-├── models/                  # TODO: saved policies
-└── README.md
-```
-
-## Future Work
-
-- Tune the reward function and goal tolerance. PPO ends about 5 m from the goal and loops there, which suggests the termination radius and the reward near the goal need adjusting.
-- Train with multiple seeds and report mean and standard deviation.
-- Add environmental disturbances (wind, waves, currents) and domain randomization.
-- Add obstacle avoidance and path following along the circuit.
-- Test curriculum learning for harder goal placements.
-
-## License
-
-`TODO`: add a license (e.g. MIT).
