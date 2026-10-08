@@ -34,8 +34,7 @@ The goal of this project is to learn a control policy that drives the WAM-V from
 | Start position | $(-800, 450)$ m |
 | Goal points | P1 $(-825.1, 518.7)$, P2 $(-753.6, 437.7)$, P3 $(-888.4, 499.2)$, P4 $(-839.2, 420.7)$ |
 | Action space | Continuous $\mathbf{a}_t = [a_L, a_R] \in [-1,1]^2$, mapped to left/right thruster thrust $[0,1000]$ |
-| Observation space | $\mathbf{o}_t = [e_x^b, e_y^b, e_\psi, u, v, r, v_d]$: body-frame goal position error, heading error, surge/sway velocities, yaw rate, and desired speed |
-| Reward | $R_t = -2.0d_t - 0.5\lvert e_{\psi,t}\rvert - 0.25\lvert v_t-v_d\rvert + 2.0\Delta d_t - 0.05\frac{\lvert T_L\rvert+\lvert T_R\rvert}{1000}$ |
+| Observation space | $`\mathbf{o}_t = [e_x^b,\ e_y^b,\ e_\psi,\ u,\ v,\ r,\ v_d]`$: body-frame goal position error, heading error, surge/sway velocities, yaw rate, and desired speed || Reward | $R_t = -2.0d_t - 0.5\lvert e_{\psi,t}\rvert - 0.25\lvert v_t-v_d\rvert + 2.0\Delta d_t - 0.05\frac{\lvert T_L\rvert+\lvert T_R\rvert}{1000}$ |
 | Simulator | Gazebo / VRX |
 
 ## Algorithms
