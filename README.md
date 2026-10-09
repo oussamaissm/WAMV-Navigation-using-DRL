@@ -19,8 +19,6 @@ Deep reinforcement learning for autonomous point-to-point navigation of a **WAM-
 
 The goal of this project is to learn a control policy that drives the WAM-V from a fixed start position to a target position, without a hand-tuned controller. Policies are trained with model-free DRL and evaluated on four random goal points inside a polygonal circuit.
 
-
-
 ## Task Description
 
 | Item | Value |
@@ -113,16 +111,13 @@ The experiment generates $N=10{,}000$ simulated trajectories, starting from a co
 
 The initial position and target are:
 
-
-$$
+```math
 \mathbf{p}_0=(0,0), \qquad \mathbf{g}=(10,10)
-$$
-
+```
 
 The simplified simulation dynamics are:
 
-
-$$
+```math
 \mathbf{p}_{t+1}
 =
 \mathbf{p}_t
@@ -132,8 +127,7 @@ d\frac{\mathbf{g}-\mathbf{p}_t}
 \Delta t
 +
 \sigma\sqrt{\Delta t}\boldsymbol{\epsilon}_t
-$$
-
+```
 
 where:
 
@@ -162,14 +156,12 @@ The implementation additionally constructs three nonlinear features for the refe
 
 Distance measures the average normalized distance to the target throughout the trajectory:
 
-
-$$
+```math
 D=
 \frac{1}{T+1}
 \sum_{t=0}^{T}
 \frac{\|\mathbf{g}-\mathbf{p}_t\|}{d_0}
-$$
-
+```
 
 where:
 
@@ -183,12 +175,10 @@ A lower value of $D$ indicates that the trajectory remains closer to the target 
 
 Progress measures the reduction in distance to the target relative to the total distance travelled:
 
-
-$$
+```math
 P=
 \frac{d_0-d_T}{\max(L,\epsilon)}
-$$
-
+```
 
 where:
 
@@ -205,14 +195,12 @@ Heading error measures the average absolute angular difference between the direc
 
 The error is evaluated every $K=20$ simulation steps:
 
-
-$$
+```math
 H=
 \frac{1}{N_c}
 \sum_{k=1}^{N_c}
 \frac{|e_{\psi,k}|}{\pi}
-$$
-
+```
 
 where:
 
@@ -227,22 +215,18 @@ A lower value of $H$ indicates better heading alignment.
 
 In addition to the three primary metrics, the implementation constructs three additional features:
 
-
-$$
+```math
 D^2,\qquad H^2,\qquad DH
-$$
-
+```
 
 The complete feature vector is:
 
-
-$$
+```math
 \mathbf{F}=
 \begin{bmatrix}
 D & P & H & D^2 & H^2 & DH
 \end{bmatrix}^{T}
-$$
-
+```
 
 These features are used by the reference quality function to introduce nonlinear penalties.
 
@@ -264,11 +248,9 @@ The training set is used to estimate the reward weights and preference-model tem
 
 Feature standardization is performed using the training-set statistics:
 
-
-$$
+```math
 z_f=\frac{f-\mu_f}{\sigma_f}
-$$
-
+```
 
 where $\mu_f$ and $\sigma_f$ are the training mean and standard deviation of feature $f$.
 
@@ -276,16 +258,14 @@ The same normalization statistics are then applied to the test set.
 
 For the three primary features, the implementation uses the sign-adjusted representation:
 
-
-$$
+```math
 \mathbf{s}=
 \begin{bmatrix}
 -z(D)\\
 +z(P)\\
 -z(H)
 \end{bmatrix}
-$$
-
+```
 
 This convention ensures that larger values correspond to better performance for each of the three reward components:
 
@@ -303,15 +283,13 @@ Pairwise preferences are generated using a reference quality function.
 
 In the implementation, the quality function is:
 
-
-$$
+```math
 \boxed{
 Q(\tau)=
 -z(D)+z(P)-z(H)
 -z(D^2)-z(H^2)-z(DH)
 }
-$$
-
+```
 
 Here, each $z(\cdot)$ represents the standardized value of the corresponding feature.
 
@@ -334,13 +312,11 @@ The training trajectories are sorted from highest to lowest reference quality.
 
 For each unique pair of trajectories $i<j$, the earlier trajectory is treated as preferred:
 
-
-$$
+```math
 i\succ j
 \quad\Longleftrightarrow\quad
 Q(\tau_i)>Q(\tau_j)
-$$
-
+```
 
 The preference model receives these pairwise rankings and the three sign-adjusted primary features.
 
@@ -348,18 +324,15 @@ It does not directly receive the reference quality scores as optimization target
 
 For $N_{\text{train}}=8{,}000$ training trajectories, the number of unique pairs is:
 
-
-$$
+```math
 |\mathcal{P}_{\text{train}}|
 =
 \frac{N_{\text{train}}(N_{\text{train}}-1)}{2}
-$$
-
+```
 
 Therefore:
 
-
-$$
+```math
 \boxed{
 |\mathcal{P}_{\text{train}}|
 =
@@ -367,48 +340,41 @@ $$
 =
 31{,}996{,}000
 }
-$$
-
+```
 
 The optimization uses all these pairs rather than sampling a subset.
 
 For the 2,000 test trajectories:
 
-
-$$
+```math
 |\mathcal{P}_{\text{test}}|
 =
 \frac{2000\times1999}{2}
 =
 1{,}999{,}000
-$$
-
+```
 
 ### 7. Bradley–Terry preference model
 
 The Bradley–Terry model estimates the probability that trajectory $i$ is preferred over trajectory $j$:
 
-
-$$
+```math
 P(i\succ j)
 =
 \sigma\left(
 \beta\mathbf{w}^{T}
 (\mathbf{s}_i-\mathbf{s}_j)
 \right)
-$$
-
+```
 
 where:
 
-
-$$
+```math
 \mathbf{w}=
 \begin{bmatrix}
 w_D & w_P & w_H
 \end{bmatrix}^{T}
-$$
-
+```
 
 and:
 
@@ -421,8 +387,7 @@ A higher predicted probability indicates a stronger preference for trajectory $i
 
 The corresponding mean negative log-likelihood is:
 
-
-$$
+```math
 \mathcal{L}(\mathbf{w},\beta)
 =
 \frac{1}{|\mathcal{P}|}
@@ -435,8 +400,7 @@ $$
 (\mathbf{s}_i-\mathbf{s}_j)
 \right)
 \right]
-$$
-
+```
 
 The optimization seeks weights that assign higher scores to trajectories preferred by the reference quality function.
 
@@ -444,8 +408,7 @@ The optimization seeks weights that assign higher scores to trajectories preferr
 
 The reward model being learned is:
 
-
-$$
+```math
 \boxed{
 G(\tau)=
 \beta
@@ -455,43 +418,34 @@ G(\tau)=
 -w_Hz(H)
 \right]
 }
-$$
-
+```
 
 The weights satisfy:
 
-
-$$
+```math
 w_D+w_P+w_H=1
-$$
-
+```
 
 with:
 
-
-$$
+```math
 w_D,w_P,w_H\geq0
-$$
-
+```
 
 Each weight is also bounded above by 1.
 
 The temperature is constrained by:
 
-
-$$
+```math
 0.1\leq\beta\leq200
-$$
-
+```
 
 The complete optimization problem is:
 
-
-$$
+```math
 \min_{\mathbf{w},\beta}
 \mathcal{L}(\mathbf{w},\beta)
-$$
-
+```
 
 subject to the weight and temperature constraints above.
 
@@ -505,61 +459,49 @@ The parameters are optimized using **Sequential Least Squares Programming (SLSQP
 
 The optimization vector is:
 
-
-$$
+```math
 \mathbf{x}=
 \begin{bmatrix}
 w_D & w_P & w_H & \log\beta
 \end{bmatrix}^{T}
-$$
-
+```
 
 The temperature is recovered using:
 
-
-$$
+```math
 \beta=e^{x_4}
-$$
-
+```
 
 This parameterization ensures that the temperature remains positive.
 
 The optimization is initialized with approximately equal weights:
 
-
-$$
+```math
 \mathbf{w}_0=(0.33,0.33,0.33)
-$$
-
+```
 
 and:
 
-
-$$
+```math
 \beta_0=1
-$$
-
+```
 
 The maximum number of SLSQP iterations is 200.
 
 The resulting parameters are:
 
-
-$$
+```math
 \mathbf{w}^{*}=
 \begin{bmatrix}
 w_D^{*} & w_P^{*} & w_H^{*}
 \end{bmatrix}^{T}
-$$
-
+```
 
 and:
 
-
-$$
+```math
 \beta^{*}
-$$
-
+```
 
 ### 10. Training and held-out evaluation
 
@@ -581,8 +523,7 @@ The fraction of test pairs for which the learned reward assigns a higher score t
 
 The accuracy is defined as:
 
-
-$$
+```math
 \operatorname{Accuracy}
 =
 \frac{
@@ -595,8 +536,7 @@ G(\tau_i)>G(\tau_j)
 }{
 |\mathcal{P}_{\text{test}}|
 }
-$$
-
+```
 
 A higher pairwise accuracy indicates better agreement with the reference ranking.
 
@@ -621,11 +561,9 @@ The estimated parameters are:
 
 The optimization terminated successfully, and the learned weights satisfy the constraints:
 
-
-$$
+```math
 w_D^*+w_P^*+w_H^*=1
-$$
-
+```
 
 with all three weights non-negative.
 
@@ -633,18 +571,15 @@ The estimated weights suggest prioritizing distance-related performance and head
 
 The candidate normalized weights are:
 
-
-$$
+```math
 \boxed{
 (w_D,w_P,w_H)
 =
 (0.440010,\ 0.171709,\ 0.388282)
 }
-$$
-
+```
 
 The current results establish that the optimization successfully fitted a three-weight reward model to the synthetic preference ranking. Further experiments are necessary to determine whether these weights improve navigation performance in the full WAM-V simulation.
-
 
 ### 12. Application to WAM-V reinforcement learning
 
