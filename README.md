@@ -91,9 +91,9 @@ Squares mark the final rest position of each vehicle.
 
 ## Reward Weight Optimization
 
-In some experiments, the WAM-V may take inefficient turns, make unnecessary corrections, or spend too much time aligning its heading. To investigate how reward coefficients can be selected systematically, this experiment uses a data-driven procedure to estimate the relative importance of three trajectory-quality components: distance, progress, and heading error.
+During WAM-V navigation, inefficient turns, unnecessary heading corrections, and excessive alignment time can reduce navigation performance. These behaviors highlight the challenge of selecting appropriate reward coefficients for DRL.
 
-The method generates simulated trajectories, extracts trajectory-level features, constructs pairwise preferences using a reference quality function, and estimates reward weights using a **Bradley–Terry preference model**.
+As a proof of concept (PoC), this experiment uses trajectory comparisons and the Bradley–Terry model to estimate the relative importance of distance, progress, and heading error, demonstrating a systematic, data-driven alternative to manual reward-weight tuning.
 
 The optimization learns three reward weights:
 
