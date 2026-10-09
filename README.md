@@ -99,27 +99,30 @@ The method generates simulated trajectories, extracts trajectory-level features,
 
 The optimization learns three reward weights:
 
-- \(w_D\): distance-related reward weight.
-- \(w_P\): progress reward weight.
-- \(w_H\): heading-related reward weight.
+- $w_D$: distance-related reward weight.
+- $w_P$: progress reward weight.
+- $w_H$: heading-related reward weight.
 
-A fourth parameter, \(\beta\), controls the sensitivity of the preference model.
+A fourth parameter, $\beta$, controls the sensitivity of the preference model.
 
 > **Important:** This experiment uses a simplified point-mass simulator with drift and stochastic noise. It is intended to study reward-weight estimation and does not reproduce the full WAM-V/VRX dynamics.
 
 ### 1. Trajectory generation
 
-The experiment generates \(N=10{,}000\) simulated trajectories, starting from a common initial position and navigating toward the same target.
+The experiment generates $N=10{,}000$ simulated trajectories, starting from a common initial position and navigating toward the same target.
 
 The initial position and target are:
 
-\[
+
+$$
 \mathbf{p}_0=(0,0), \qquad \mathbf{g}=(10,10)
-\]
+$$
+
 
 The simplified simulation dynamics are:
 
-\[
+
+$$
 \mathbf{p}_{t+1}
 =
 \mathbf{p}_t
@@ -129,16 +132,17 @@ d\frac{\mathbf{g}-\mathbf{p}_t}
 \Delta t
 +
 \sigma\sqrt{\Delta t}\boldsymbol{\epsilon}_t
-\]
+$$
+
 
 where:
 
-- \(\mathbf{p}_t\) is the current position.
-- \(\mathbf{g}\) is the target position.
-- \(d=0.5\) is the drift magnitude.
-- \(\sigma=1\) controls the stochastic noise.
-- \(\Delta t=0.1\) seconds.
-- \(\boldsymbol{\epsilon}_t\sim\mathcal{N}(0,I)\) is a two-dimensional Gaussian noise vector.
+- $\mathbf{p}_t$ is the current position.
+- $\mathbf{g}$ is the target position.
+- $d=0.5$ is the drift magnitude.
+- $\sigma=1$ controls the stochastic noise.
+- $\Delta t=0.1$ seconds.
+- $\boldsymbol{\epsilon}_t\sim\mathcal{N}(0,I)$ is a two-dimensional Gaussian noise vector.
 
 Each trajectory contains 800 simulation steps.
 
@@ -154,81 +158,91 @@ Three primary trajectory metrics are extracted from each simulated trajectory: d
 
 The implementation additionally constructs three nonlinear features for the reference quality function.
 
-#### 2.1 Distance \(D\)
+#### 2.1 Distance $D$
 
 Distance measures the average normalized distance to the target throughout the trajectory:
 
-\[
+
+$$
 D=
 \frac{1}{T+1}
 \sum_{t=0}^{T}
 \frac{\|\mathbf{g}-\mathbf{p}_t\|}{d_0}
-\]
+$$
+
 
 where:
 
-- \(T=800\) is the number of simulation steps.
-- \(d_0\) is the initial distance to the target.
-- \(\mathbf{p}_t\) is the position at time \(t\).
+- $T=800$ is the number of simulation steps.
+- $d_0$ is the initial distance to the target.
+- $\mathbf{p}_t$ is the position at time $t$.
 
-A lower value of \(D\) indicates that the trajectory remains closer to the target on average.
+A lower value of $D$ indicates that the trajectory remains closer to the target on average.
 
-#### 2.2 Progress \(P\)
+#### 2.2 Progress $P$
 
 Progress measures the reduction in distance to the target relative to the total distance travelled:
 
-\[
+
+$$
 P=
 \frac{d_0-d_T}{\max(L,\epsilon)}
-\]
+$$
+
 
 where:
 
-- \(d_0\) is the initial distance to the target.
-- \(d_T\) is the final distance to the target.
-- \(L\) is the total travelled path length.
-- \(\epsilon\) is a small positive constant used to avoid division by zero.
+- $d_0$ is the initial distance to the target.
+- $d_T$ is the final distance to the target.
+- $L$ is the total travelled path length.
+- $\epsilon$ is a small positive constant used to avoid division by zero.
 
-A higher value of \(P\) indicates more efficient progress toward the target relative to the distance travelled.
+A higher value of $P$ indicates more efficient progress toward the target relative to the distance travelled.
 
-#### 2.3 Heading error \(H\)
+#### 2.3 Heading error $H$
 
 Heading error measures the average absolute angular difference between the direction of displacement and the direction toward the target.
 
-The error is evaluated every \(K=20\) simulation steps:
+The error is evaluated every $K=20$ simulation steps:
 
-\[
+
+$$
 H=
 \frac{1}{N_c}
 \sum_{k=1}^{N_c}
 \frac{|e_{\psi,k}|}{\pi}
-\]
+$$
+
 
 where:
 
-- \(e_{\psi,k}\) is the wrapped angular error at checkpoint \(k\).
-- \(N_c\) is the number of checkpoints.
+- $e_{\psi,k}$ is the wrapped angular error at checkpoint $k$.
+- $N_c$ is the number of checkpoints.
 
-The angular error is wrapped to the interval \([-\pi,\pi)\).
+The angular error is wrapped to the interval $[-\pi,\pi)$.
 
-A lower value of \(H\) indicates better heading alignment.
+A lower value of $H$ indicates better heading alignment.
 
 #### 2.4 Nonlinear features
 
 In addition to the three primary metrics, the implementation constructs three additional features:
 
-\[
+
+$$
 D^2,\qquad H^2,\qquad DH
-\]
+$$
+
 
 The complete feature vector is:
 
-\[
+
+$$
 \mathbf{F}=
 \begin{bmatrix}
 D & P & H & D^2 & H^2 & DH
 \end{bmatrix}^{T}
-\]
+$$
+
 
 These features are used by the reference quality function to introduce nonlinear penalties.
 
@@ -250,24 +264,28 @@ The training set is used to estimate the reward weights and preference-model tem
 
 Feature standardization is performed using the training-set statistics:
 
-\[
-z_f=\frac{f-\mu_f}{\sigma_f}
-\]
 
-where \(\mu_f\) and \(\sigma_f\) are the training mean and standard deviation of feature \(f\).
+$$
+z_f=\frac{f-\mu_f}{\sigma_f}
+$$
+
+
+where $\mu_f$ and $\sigma_f$ are the training mean and standard deviation of feature $f$.
 
 The same normalization statistics are then applied to the test set.
 
 For the three primary features, the implementation uses the sign-adjusted representation:
 
-\[
+
+$$
 \mathbf{s}=
 \begin{bmatrix}
 -z(D)\\
 +z(P)\\
 -z(H)
 \end{bmatrix}
-\]
+$$
+
 
 This convention ensures that larger values correspond to better performance for each of the three reward components:
 
@@ -285,17 +303,19 @@ Pairwise preferences are generated using a reference quality function.
 
 In the implementation, the quality function is:
 
-\[
+
+$$
 \boxed{
 Q(\tau)=
 -z(D)+z(P)-z(H)
 -z(D^2)-z(H^2)-z(DH)
 }
-\]
+$$
 
-Here, each \(z(\cdot)\) represents the standardized value of the corresponding feature.
 
-**Important implementation detail:** \(z(D^2)\) means that the raw feature \(D^2\) is standardized independently. It is not the same as \([z(D)]^2\). The same distinction applies to the other nonlinear features.
+Here, each $z(\cdot)$ represents the standardized value of the corresponding feature.
+
+**Important implementation detail:** $z(D^2)$ means that the raw feature $D^2$ is standardized independently. It is not the same as $[z(D)]^2$. The same distinction applies to the other nonlinear features.
 
 The reference quality function combines:
 
@@ -312,29 +332,34 @@ The reference function generates the preference labels. It is not itself the rew
 
 The training trajectories are sorted from highest to lowest reference quality.
 
-For each unique pair of trajectories \(i<j\), the earlier trajectory is treated as preferred:
+For each unique pair of trajectories $i<j$, the earlier trajectory is treated as preferred:
 
-\[
+
+$$
 i\succ j
 \quad\Longleftrightarrow\quad
 Q(\tau_i)>Q(\tau_j)
-\]
+$$
+
 
 The preference model receives these pairwise rankings and the three sign-adjusted primary features.
 
 It does not directly receive the reference quality scores as optimization targets.
 
-For \(N_{\text{train}}=8{,}000\) training trajectories, the number of unique pairs is:
+For $N_{\text{train}}=8{,}000$ training trajectories, the number of unique pairs is:
 
-\[
+
+$$
 |\mathcal{P}_{\text{train}}|
 =
 \frac{N_{\text{train}}(N_{\text{train}}-1)}{2}
-\]
+$$
+
 
 Therefore:
 
-\[
+
+$$
 \boxed{
 |\mathcal{P}_{\text{train}}|
 =
@@ -342,54 +367,62 @@ Therefore:
 =
 31{,}996{,}000
 }
-\]
+$$
+
 
 The optimization uses all these pairs rather than sampling a subset.
 
 For the 2,000 test trajectories:
 
-\[
+
+$$
 |\mathcal{P}_{\text{test}}|
 =
 \frac{2000\times1999}{2}
 =
 1{,}999{,}000
-\]
+$$
+
 
 ### 7. Bradley–Terry preference model
 
-The Bradley–Terry model estimates the probability that trajectory \(i\) is preferred over trajectory \(j\):
+The Bradley–Terry model estimates the probability that trajectory $i$ is preferred over trajectory $j$:
 
-\[
+
+$$
 P(i\succ j)
 =
 \sigma\left(
 \beta\mathbf{w}^{T}
 (\mathbf{s}_i-\mathbf{s}_j)
 \right)
-\]
+$$
+
 
 where:
 
-\[
+
+$$
 \mathbf{w}=
 \begin{bmatrix}
 w_D & w_P & w_H
 \end{bmatrix}^{T}
-\]
+$$
+
 
 and:
 
-- \(\sigma(x)=1/(1+e^{-x})\) is the sigmoid function.
-- \(\mathbf{w}\) contains the three reward weights.
-- \(\beta\) is the learned inverse-temperature parameter.
-- \(\mathbf{s}_i-\mathbf{s}_j\) is the difference between the sign-adjusted primary features of two trajectories.
+- $\sigma(x)=1/(1+e^{-x})$ is the sigmoid function.
+- $\mathbf{w}$ contains the three reward weights.
+- $\beta$ is the learned inverse-temperature parameter.
+- $\mathbf{s}_i-\mathbf{s}_j$ is the difference between the sign-adjusted primary features of two trajectories.
 
-A higher predicted probability indicates a stronger preference for trajectory \(i\).
+A higher predicted probability indicates a stronger preference for trajectory $i$.
 
 The corresponding mean negative log-likelihood is:
 
-\[
+
+$$
 \mathcal{L}(\mathbf{w},\beta)
 =
 \frac{1}{|\mathcal{P}|}
@@ -402,7 +435,8 @@ The corresponding mean negative log-likelihood is:
 (\mathbf{s}_i-\mathbf{s}_j)
 \right)
 \right]
-\]
+$$
+
 
 The optimization seeks weights that assign higher scores to trajectories preferred by the reference quality function.
 
@@ -410,7 +444,8 @@ The optimization seeks weights that assign higher scores to trajectories preferr
 
 The reward model being learned is:
 
-\[
+
+$$
 \boxed{
 G(\tau)=
 \beta
@@ -420,34 +455,43 @@ G(\tau)=
 -w_Hz(H)
 \right]
 }
-\]
+$$
+
 
 The weights satisfy:
 
-\[
+
+$$
 w_D+w_P+w_H=1
-\]
+$$
+
 
 with:
 
-\[
+
+$$
 w_D,w_P,w_H\geq0
-\]
+$$
+
 
 Each weight is also bounded above by 1.
 
 The temperature is constrained by:
 
-\[
+
+$$
 0.1\leq\beta\leq200
-\]
+$$
+
 
 The complete optimization problem is:
 
-\[
+
+$$
 \min_{\mathbf{w},\beta}
 \mathcal{L}(\mathbf{w},\beta)
-\]
+$$
+
 
 subject to the weight and temperature constraints above.
 
@@ -461,49 +505,61 @@ The parameters are optimized using **Sequential Least Squares Programming (SLSQP
 
 The optimization vector is:
 
-\[
+
+$$
 \mathbf{x}=
 \begin{bmatrix}
 w_D & w_P & w_H & \log\beta
 \end{bmatrix}^{T}
-\]
+$$
+
 
 The temperature is recovered using:
 
-\[
+
+$$
 \beta=e^{x_4}
-\]
+$$
+
 
 This parameterization ensures that the temperature remains positive.
 
 The optimization is initialized with approximately equal weights:
 
-\[
+
+$$
 \mathbf{w}_0=(0.33,0.33,0.33)
-\]
+$$
+
 
 and:
 
-\[
+
+$$
 \beta_0=1
-\]
+$$
+
 
 The maximum number of SLSQP iterations is 200.
 
 The resulting parameters are:
 
-\[
+
+$$
 \mathbf{w}^{*}=
 \begin{bmatrix}
 w_D^{*} & w_P^{*} & w_H^{*}
 \end{bmatrix}^{T}
-\]
+$$
+
 
 and:
 
-\[
+
+$$
 \beta^{*}
-\]
+$$
+
 
 ### 10. Training and held-out evaluation
 
@@ -525,7 +581,8 @@ The fraction of test pairs for which the learned reward assigns a higher score t
 
 The accuracy is defined as:
 
-\[
+
+$$
 \operatorname{Accuracy}
 =
 \frac{
@@ -538,7 +595,8 @@ G(\tau_i)>G(\tau_j)
 }{
 |\mathcal{P}_{\text{test}}|
 }
-\]
+$$
+
 
 A higher pairwise accuracy indicates better agreement with the reference ranking.
 
@@ -552,10 +610,10 @@ The estimated parameters are:
 
 | Parameter | Estimated value | Interpretation |
 |---|---:|---|
-| \(w_D^*\) | 0.440010 | Relative importance of distance |
-| \(w_P^*\) | 0.171709 | Relative importance of progress |
-| \(w_H^*\) | 0.388282 | Relative importance of heading quality |
-| \(\beta^*\) | 117.104 | Learned inverse temperature |
+| $w_D^*$ | 0.440010 | Relative importance of distance |
+| $w_P^*$ | 0.171709 | Relative importance of progress |
+| $w_H^*$ | 0.388282 | Relative importance of heading quality |
+| $\beta^*$ | 117.104 | Learned inverse temperature |
 | Weight sum | 1.000000 | Satisfies the normalization constraint |
 | Training loss | 0.01082487 | Mean Bradley–Terry negative log-likelihood |
 | Test loss | 0.010998 | Mean Bradley–Terry negative log-likelihood on held-out pairs |
@@ -563,9 +621,11 @@ The estimated parameters are:
 
 The optimization terminated successfully, and the learned weights satisfy the constraints:
 
-\[
+
+$$
 w_D^*+w_P^*+w_H^*=1
-\]
+$$
+
 
 with all three weights non-negative.
 
@@ -573,13 +633,15 @@ The estimated weights suggest prioritizing distance-related performance and head
 
 The candidate normalized weights are:
 
-\[
+
+$$
 \boxed{
 (w_D,w_P,w_H)
 =
 (0.440010,\ 0.171709,\ 0.388282)
 }
-\]
+$$
+
 
 The current results establish that the optimization successfully fitted a three-weight reward model to the synthetic preference ranking. Further experiments are necessary to determine whether these weights improve navigation performance in the full WAM-V simulation.
 
