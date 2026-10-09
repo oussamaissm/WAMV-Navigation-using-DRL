@@ -524,17 +524,17 @@ The fraction of test pairs for which the learned reward assigns a higher score t
 The accuracy is defined as:
 
 ```math
-\operatorname{Accuracy}
+\mathrm{Accuracy}
 =
 \frac{
-\left|
+\left\lvert
 \left\{
 (i,j)\in\mathcal{P}_{\text{test}}:
 G(\tau_i)>G(\tau_j)
 \right\}
-\right|
+\right\rvert
 }{
-|\mathcal{P}_{\text{test}}|
+\lvert\mathcal{P}_{\text{test}}\rvert
 }
 ```
 
