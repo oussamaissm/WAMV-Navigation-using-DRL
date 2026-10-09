@@ -11,7 +11,7 @@ Deep reinforcement learning for autonomous point-to-point navigation of a **WAM-
 - [Algorithms](#algorithms)
 - [Evaluation Metrics](#evaluation-metrics)
 - [Results](#results)
-- [Analysis](#analysis)
+- [Reward Weight Optimization](#reward-Weight-ptimization)
 
 ---
 
