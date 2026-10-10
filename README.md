@@ -230,8 +230,6 @@ D & P & H & D^2 & H^2 & DH
 
 These features are used by the reference quality function to introduce nonlinear penalties.
 
-**Importantly, the optimizer does not learn six independent reward weights.** It uses the first three features to learn the weights of the original distance, progress, and heading reward components. The additional features influence the reference preference ordering.
-
 ### 3. Training and test split
 
 The 10,000 trajectories are randomly divided into two sets:
